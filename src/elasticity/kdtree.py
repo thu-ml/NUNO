@@ -9,7 +9,7 @@ class KDTree(BaseKDTree):
 
     def postprocess(self):
         '''
-        Implement this function as what you need.
+        Split the subdomain with too much void
         '''
         # Check if a subdomain contain any void (empty area)
         def check_sparse(node):

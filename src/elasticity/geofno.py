@@ -348,10 +348,17 @@ test_xy = input_xy[-ntest:]
 
 print(train_rr.shape, train_s.shape, train_xy.shape)
 
-train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_rr, train_s, train_xy), batch_size=batch_size,
-                                           shuffle=True)
-test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_rr, test_s, test_xy), batch_size=batch_size,
-                                          shuffle=False)
+train_loader = torch.utils.data.DataLoader(
+    torch.utils.data.TensorDataset(train_rr, train_s, train_xy), 
+    batch_size=batch_size, shuffle=True,
+    generator=torch.Generator(device=device)
+)
+test_loader = torch.utils.data.DataLoader(
+    torch.utils.data.TensorDataset(test_rr, test_s, test_xy), 
+    batch_size=batch_size,
+    shuffle=False,
+    generator=torch.Generator(device=device)
+)
 
 ################################################################
 # training and evaluation

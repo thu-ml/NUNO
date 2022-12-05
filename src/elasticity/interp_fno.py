@@ -181,10 +181,16 @@ y_test = output[:Ntotal][-ntest:, ::r, ::r][:, :s, :s]
 x_train = x_train.reshape(ntrain, s, s, 1)
 x_test = x_test.reshape(ntest, s, s, 1)
 
-train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(x_train, y_train), batch_size=batch_size,
-                                           shuffle=True)
-test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(x_test, y_test), batch_size=batch_size,
-                                          shuffle=False)
+train_loader = torch.utils.data.DataLoader(
+    torch.utils.data.TensorDataset(x_train, y_train), 
+    batch_size=batch_size, shuffle=True,
+    generator=torch.Generator(device=device)
+)
+test_loader = torch.utils.data.DataLoader(
+    torch.utils.data.TensorDataset(x_test, y_test), 
+    batch_size=batch_size, shuffle=False,
+    generator=torch.Generator(device=device)
+)
 
 ################################################################
 # training and evaluation
