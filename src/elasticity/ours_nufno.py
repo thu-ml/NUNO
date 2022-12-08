@@ -122,7 +122,8 @@ test_loader = torch.utils.data.DataLoader(
 ################################################################
 model = NUFNO2d(
     train_rr.shape[1], train_s.shape[1],
-    modes, modes, width, n_subdomains=8
+    modes, modes, width, hidden_dim_x=width,
+    hidden_dim_y=width, n_subdomains=8
 )
 print("Model size: %d"%count_params(model))
 
