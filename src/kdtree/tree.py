@@ -58,6 +58,8 @@ class KDTree:
         """
         self.return_indices = return_indices
         self.dim = dim
+        self.smallest_points = smallest_points
+        self.n_subdomains = n_subdomains
         if return_indices:
             points = [list(points[i]) + [i] for i in range(len(points))]
         self.nodes = [KDTreeNode(0, points, dim, n_blocks, smallest_points, max_depth)]
@@ -131,3 +133,6 @@ class KDTree:
                 for node in self.nodes]
         else:
             return None
+    
+    def sort_nodes_by_n_points(self):
+        self.nodes.sort(key=lambda node: len(node.points))

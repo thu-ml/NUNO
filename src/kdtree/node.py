@@ -36,10 +36,11 @@ class KDTreeNode:
         shape = [None] * self.dim
         shape[0] = self.n_blocks * np.prod([(bbox[0][1] - bbox[0][0]) / 
             (bbox[j][1] - bbox[j][0]) for j in range(1, self.dim)])
-        shape[0] = max(int(np.round(shape[0] ** (1 / self.dim))), 1)
+        shape[0] = shape[0] ** (1 / self.dim)
         for j in range(1, self.dim):
-            shape[j] = max(int(np.round((bbox[j][1] - bbox[j][0]) / \
-                (bbox[0][1] - bbox[0][0]) * shape[0])), 1)
+            shape[j] = (bbox[j][1] - bbox[j][0]) / \
+                (bbox[0][1] - bbox[0][0]) * shape[0]
+        shape = [max(int(np.round(l)), 1) for l in shape]
         # Count the discrete distribution of the point set
         block_proportions = np.zeros(shape)
         for point in point_set:

@@ -36,19 +36,8 @@ class KDTree(BaseKDTree):
                     return True, i, split_val
             return False, None, None
 
-        # split a given node according to `split_val`
-        def split_node_by_index(node_idx, dim_splitted, split_val, spread_dict):
-            node = self.nodes[node_idx]
-            i = dim_splitted
-            n_left = np.sum(node.points_np[:, i] <= split_val)
-            n_right = np.sum(node.points_np[:, i] > split_val)
-            preserve_part = node.points_np[node.points_np[:, i] <= split_val]
-            eliminate_part = node.points_np[node.points_np[:, i] > split_val]
-            if n_left < n_right:
-                preserve_part, eliminate_part = eliminate_part, preserve_part
-            self.nodes[node_idx].replace_points(preserve_part.tolist())
-            # Spread `eliminate_part` to nearest subdomains
-            for point in eliminate_part:
+        def spread_points(node_idx, i, points, spread_dict):
+            for point in points:
                 indices = [j for j in range(len(self.nodes)) if j != node_idx]
                 dists = [
                     (0. if self.nodes[idx].bbox[i][0] <= point[i] <= 
@@ -69,6 +58,25 @@ class KDTree(BaseKDTree):
                 else:
                     spread_dict[nearest_idx].append(point.tolist())
 
+        def split_node_by_index(node_idx, dim_splitted, split_val, spread_dict):
+            node = self.nodes[node_idx]
+            i = dim_splitted
+            n_left = np.sum(node.points_np[:, i] <= split_val)
+            n_right = np.sum(node.points_np[:, i] > split_val)
+            preserve_part = node.points_np[node.points_np[:, i] <= split_val]
+            eliminate_part = node.points_np[node.points_np[:, i] > split_val]
+            if n_left < n_right:
+                preserve_part, eliminate_part = eliminate_part, preserve_part
+            # Spread `eliminate_part` to nearest subdomains
+            spread_points(node_idx, i, eliminate_part, spread_dict)
+            # Preserve `preserve_part` if there are enough points
+            if len(preserve_part) >= self.smallest_points:
+                self.nodes[node_idx].replace_points(preserve_part.tolist())
+                return True
+            else:
+                spread_points(node_idx, i, preserve_part, spread_dict)
+                return False
+
         change = True
         max_iter = 1000
         iter_cnt = 0
@@ -83,11 +91,17 @@ class KDTree(BaseKDTree):
                     change = True
                     break
             if is_sparse:
-                split_node_by_index(i, dim_splitted, split_val, spread_dict)
+                is_preserve = split_node_by_index(i, dim_splitted, split_val, spread_dict)
                 # apply spreading
                 for k, v in spread_dict.items():
                     self.nodes[k].add_points(v)
-            # Avoid infinite loops
+                if not is_preserve:
+                    self.nodes.pop(i)
+            # Avoid dead loops
             iter_cnt += 1
             if iter_cnt >= max_iter:
                 break
+        
+        # If the number of nodes are less than `n_subdomains`,
+        # split new nodes
+        self.nodes = self.split(self.nodes, self.n_subdomains, simple=False)
