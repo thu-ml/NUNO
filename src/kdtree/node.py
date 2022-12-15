@@ -8,7 +8,7 @@ class KDTreeNode:
     '''
     A Tree Node used by `KDTree`.
     '''
-    def __init__(self, depth, points, dim, n_blocks, smallest_points, max_depth):
+    def __init__(self, depth, points, dim, n_blocks, smallest_points, max_depth, borders):
         self.depth = depth
         self.points = points
         self.points_np = np.array(points)
@@ -16,6 +16,7 @@ class KDTreeNode:
         self.n_blocks = n_blocks
         self.smallest_points = smallest_points
         self.max_depth = max_depth
+        self.borders = borders
         self.alive = True
         # Calculate the bounding box
         self.bbox = [(np.min(self.points_np[:, i]), 
@@ -63,7 +64,7 @@ class KDTreeNode:
     def try_split(self, i):
         '''
         Try to split in the i-th dimension,
-        and return the best possible KL
+        and return the best possible KL.
         '''
         cond_kls = []
         split_points = []
@@ -117,15 +118,15 @@ class KDTreeNode:
             self.set_dead()
             return
         # Split the dimension with the biggest scale
-        dim_chosen = np.argmax([e[1] - e[0] for e in self.bbox])
-        self.points.sort(key=lambda x: x[dim_chosen])
+        self.dim_chosen = np.argmax([e[1] - e[0] for e in self.bbox])
+        self.points.sort(key=lambda x: x[self.dim_chosen])
         self.points_np = np.array(self.points)
         # Calculate the overall KL divergence
         self.K_shape, self.overall_kl = self.cal_kl_divergence(
             self.points, self.bbox)
         # Choose the split point which maximize
         # the difference of KL divergence after splitting (i.e., KL gain)
-        ok, self.split_chosen = self.try_split(dim_chosen)
+        ok, self.split_chosen = self.try_split(self.dim_chosen)
         if not ok:
             self.set_dead()
     
@@ -140,28 +141,52 @@ class KDTreeNode:
         '''
         Split according to the best KL gain
         '''
+        borders_l, borders_r = self.borders[:], self.borders[:]
+        split_val = self.points[self.split_chosen][self.dim_chosen]
+        borders_l[self.dim_chosen] = (
+            borders_l[self.dim_chosen][0], split_val)
+        borders_r[self.dim_chosen] = (
+            split_val, borders_r[self.dim_chosen][1]
+        )
         return KDTreeNode(self.depth + 1, self.points[:self.split_chosen], 
-                self.dim, self.n_blocks, self.smallest_points, self.max_depth), \
+                self.dim, self.n_blocks, self.smallest_points, 
+                self.max_depth, borders_l), \
             KDTreeNode(self.depth + 1, self.points[self.split_chosen:], 
-                self.dim, self.n_blocks, self.smallest_points, self.max_depth)
+                self.dim, self.n_blocks, self.smallest_points, 
+                self.max_depth, borders_r)
     
     def simple_split(self):
         '''
         Split according to the median
         '''
         m = len(self.points) >> 1
+        borders_l, borders_r = self.borders[:], self.borders[:]
+        split_val = self.points[m][self.dim_chosen]
+        borders_l[self.dim_chosen] = (
+            borders_l[self.dim_chosen][0], split_val)
+        borders_r[self.dim_chosen] = (
+            split_val, borders_r[self.dim_chosen][1]
+        )
         return KDTreeNode(self.depth + 1, self.points[:m], 
-                self.dim, self.n_blocks, self.smallest_points, self.max_depth), \
+                self.dim, self.n_blocks, self.smallest_points, 
+                self.max_depth, borders_l), \
             KDTreeNode(self.depth + 1, self.points[m:], 
-                self.dim, self.n_blocks, self.smallest_points, self.max_depth)
+                self.dim, self.n_blocks, self.smallest_points, 
+                self.max_depth, borders_r)
 
     def get_bounding_box(self):
         return self.bbox
 
+    def get_borders(self):
+        return self.borders
+
     def add_points(self, new_points):
         '''
-        `new_points` should be an instance of `list`,
+        The `new_points` should be an instance of `list`,
         instead of `numpy.ndarray`.
+        WARNING: this function will not re-calculate the 
+        `self.borders`, so it may be incorrect after calling
+        this function.
         '''
         self.points.extend(new_points)
         self.points_np = np.array(self.points)
@@ -173,8 +198,11 @@ class KDTreeNode:
     
     def replace_points(self, new_points):
         '''
-        `new_points` should be an instance of `list`,
+        The `new_points` should be an instance of `list`,
         instead of `numpy.ndarray`.
+        WARNING: this function will not re-calculate the 
+        `self.borders`, so it may be incorrect after calling
+        this function.
         '''
         self.points = new_points
         self.points_np = np.array(self.points)
