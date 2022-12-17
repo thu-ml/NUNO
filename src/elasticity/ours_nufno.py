@@ -30,11 +30,11 @@ PATH_SIGMA = PATH + 'Random_UnitCell_sigma_10.npy'
 PATH_XY = PATH + 'Random_UnitCell_XY_10.npy'
 PATH_SD_INFO = PATH + 'Preprocess_subdomain_info.npy'
 PATH_DFUNC_SD = PATH + 'Preprocess_density_function_subdomain.npy'
-PATH_DFUNC_G = PATH + 'Preprocess_density_function_global.npy'
 
 # Training params
 batch_size = 20
 learning_rate = 0.001
+weight_decay = 1e-4
 epochs = 501
 # Step LR scheduler
 step_size = 50
@@ -43,7 +43,7 @@ gamma = 0.5
 # Network params
 # modes1 <= width1 // 2 + 1
 # modes2 <= width2 // 2 + 1
-modes1 = modes2 = 16  # truncated Fourier modes (ky_max, kx_max)
+modes1 = modes2 = 12  # truncated Fourier modes (ky_max, kx_max)
 width1 = width2 = 32  # hidden width
 n_channels = 32       # hidden channels
 
@@ -61,8 +61,6 @@ bandwidth = 0.05
 N1, N2 = modes1 * 2, modes2 * 2
 # L1 >= N1, L2 >= N2
 L1, L2 = modes1 * 2, modes2 * 2
-# Scaling factor of modes of the density function
-scale_factor = 2 * modes1 * 2 * modes2
 
 ################################################################
 # Data loading and preprocessing (via KD-Tree)
@@ -74,6 +72,8 @@ LOAD_PREP = True
 # Load data
 input_sigma = np.load(PATH_SIGMA)
 input_sigma = np.transpose(input_sigma, (1, 0))
+sigma_mean = np.mean(input_sigma[:ntrain, :])
+sigma_std = np.std(input_sigma[:ntrain, :])
 input_xy = np.load(PATH_XY)
 input_xy = np.transpose(input_xy, (2, 0, 1))
 input_xy = np.concatenate(
@@ -84,7 +84,6 @@ input_xy = np.concatenate(
 if LOAD_PREP:
     input_sd_info = np.load(PATH_SD_INFO)
     input_dfunc_sd = np.load(PATH_DFUNC_SD)
-    input_dfunc_g = np.load(PATH_DFUNC_G)
 else:
     print("Start KD-Tree splitting...")
     input_sd_info = []
@@ -118,19 +117,10 @@ else:
     # Since the result of real FFT is Hermitian,
     # we can simply store half of it
     input_dfunc_sd = []
-    input_dfunc_g = []
     t1 = default_timer()
     for i in tqdm(range(len(input_xy)), leave=False):
         kde = KernelDensity(kernel='gaussian', bandwidth=bandwidth).fit(input_xy[i])
-        # First sample in the global grid
-        grid_x = np.linspace(0, 1, num=width2)
-        grid_y = np.linspace(0, 1, num=width1)
-        grid_x, grid_y = np.meshgrid(grid_x, grid_y)
-        grid = np.stack((grid_x, grid_y), axis=-1)
-        positions = grid.reshape(-1, 2)
-        density_prob = np.exp(kde.score_samples(positions)).reshape(grid.shape[0], grid.shape[1])
-        input_dfunc_g.append(density_prob)
-        # Then sample in each subdomain
+        # Sample in each subdomain
         input_dfunc_sd.append([])
         # Evaluate on each subdomain (uniform grid)
         for j in range(n_subdomains):
@@ -156,13 +146,11 @@ else:
             )
     t2 = default_timer()
     input_dfunc_sd = np.array(input_dfunc_sd)
-    input_dfunc_g = np.array(input_dfunc_g)
     print("Finish estimating the density distribution of point clouds, time elapsed: {:.1f}s".format(t2-t1))
 
     if SAVE_PREP:
         np.save(PATH_SD_INFO, input_sd_info)
         np.save(PATH_DFUNC_SD, input_dfunc_sd)
-        np.save(PATH_DFUNC_G, input_dfunc_g)
 
 ################################################################
 # Preparing the dataset
@@ -170,8 +158,7 @@ else:
 input_xy = torch.tensor(input_xy, dtype=torch.float)
 input_sigma = torch.tensor(input_sigma, dtype=torch.float).unsqueeze(-1)
 input_sd_info = torch.tensor(input_sd_info, dtype=torch.float)
-input_dfunc_sd = torch.tensor(input_dfunc_sd, dtype=torch.float).unsqueeze(-1)
-input_dfunc_g = torch.tensor(input_dfunc_g, dtype=torch.float).unsqueeze(-1)
+input_dfunc_sd = torch.tensor(input_dfunc_sd, dtype=torch.cfloat).unsqueeze(-1)
 
 train_xy = input_xy[:ntrain]
 test_xy = input_xy[-ntest:]
@@ -181,13 +168,11 @@ train_sd_info = input_sd_info[:ntrain]
 test_sd_info = input_sd_info[-ntest:]
 train_dfunc_sd = input_dfunc_sd[:ntrain]
 test_dfunc_sd = input_dfunc_sd[-ntest:]
-train_dfunc_g = input_dfunc_g[:ntrain]
-test_dfunc_g = input_dfunc_g[-ntest:]
 
 train_loader = torch.utils.data.DataLoader(
     torch.utils.data.TensorDataset(
         train_xy, train_sigma, 
-        train_sd_info, train_dfunc_sd, train_dfunc_g
+        train_sd_info, train_dfunc_sd
     ), 
     batch_size=batch_size, shuffle=True,
     generator=torch.Generator(device=device)
@@ -195,7 +180,7 @@ train_loader = torch.utils.data.DataLoader(
 test_loader = torch.utils.data.DataLoader(
     torch.utils.data.TensorDataset(
         test_xy, test_sigma,
-        test_sd_info, test_dfunc_sd, test_dfunc_g
+        test_sd_info, test_dfunc_sd
     ), 
     batch_size=batch_size, shuffle=False,
     generator=torch.Generator(device=device)
@@ -209,7 +194,7 @@ model = NUFNO2d(modes1=modes1, modes2=modes2, width1=width1, width2=width2,
 print("Model size: %d"%count_params(model))
 
 params = list(model.parameters())
-optimizer = Adam(params, lr=learning_rate, weight_decay=1e-4)
+optimizer = Adam(params, lr=learning_rate, weight_decay=weight_decay)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
 myloss = LpLoss(size_average=False)
@@ -217,9 +202,9 @@ for ep in range(epochs):
     model.train()
     t1 = default_timer()
     train_l2 = 0.0
-    for xy, sigma, sd_info, dfunc_sd, dfunc_g in train_loader:
+    for xy, sigma, sd_info, dfunc_sd in train_loader:
         optimizer.zero_grad()
-        out = model(dfunc_sd, sd_info, xy)
+        out = model(dfunc_sd, sd_info, xy) * sigma_std + sigma_mean
 
         loss = myloss(out.view(batch_size, -1), sigma.view(batch_size, -1))
         loss.backward()
@@ -231,8 +216,8 @@ for ep in range(epochs):
     model.eval()
     test_l2 = 0.0
     with torch.no_grad():
-        for xy, sigma, sd_info, dfunc_sd, dfunc_g in test_loader:
-            out = model(dfunc_sd, sd_info, xy)
+        for xy, sigma, sd_info, dfunc_sd in test_loader:
+            out = model(dfunc_sd, sd_info, xy) * sigma_std + sigma_mean
             test_l2 += myloss(out.view(batch_size, -1), sigma.view(batch_size, -1)).item()
 
     train_l2 /= ntrain

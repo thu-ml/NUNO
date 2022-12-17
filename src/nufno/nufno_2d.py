@@ -62,7 +62,7 @@ class SpectralConv2d(nn.Module):
 
         return u
     
-    def forward_ft(self, x_ft, width1, width2):
+    def forward_noft(self, x_ft, width1, width2):
         x_ft1 = self.compl_mul2d(x_ft[:, :, :self.modes1, :self.modes2], self.weights1)
         x_ft2 = self.compl_mul2d(x_ft[:, :, -self.modes1:, :self.modes2], self.weights2)
 
@@ -177,117 +177,107 @@ class NUFNO2d(nn.Module):
         self.n_subdomains = n_subdomains
         self.dim_in = dim_in
         self.dim_out = dim_out
-        self.padding = 9 # pad the domain if input is non-periodic
 
         # Encoder
         sd_n_channels = self.n_channels // self.n_subdomains
-        self.encode_fc = nn.Linear(self.dim_in + 2, sd_n_channels) 
-        self.encode_conv = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2)
-        self.encode_w0 = nn.Conv2d(sd_n_channels, sd_n_channels, 1)
-        self.amp_fc0 = nn.Linear(2, 32)     # (xlen, ylen) -> amplitude
-        self.amp_fc1 = nn.Linear(32, 1)
-        self.pha_fc0 = nn.Linear(2, 32)     # (xmin, ymin) -> phase
-        self.pha_fc1 = nn.Linear(32, 2)
-        self.decode_conv = SpectralConv2d(sd_n_channels, self.n_channels, self.modes1, self.modes2)
+        self.sd_conv0 = SpectralConv2d(self.dim_in, sd_n_channels, self.modes1, self.modes2)
+        self.sd_conv1 = SpectralConv2d(self.dim_in + 2, sd_n_channels, self.modes1, self.modes2)
+        self.sd_conv2 = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2)
 
-        self.conv0 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
+        self.sd_w0 = nn.Conv2d(self.dim_in + 2, sd_n_channels, 1)
+
+        self.conv0 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2, self.width1, self.width2)
         self.conv1 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
         self.conv2 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
         self.conv3 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
-        self.conv4 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2, self.width1, self.width2)
 
-        self.w0 = nn.Conv2d(self.n_channels, self.n_channels, 1)
         self.w1 = nn.Conv2d(self.n_channels, self.n_channels, 1)
         self.w2 = nn.Conv2d(self.n_channels, self.n_channels, 1)
-        self.w3 = nn.Conv2d(self.n_channels, self.n_channels, 1)
 
-        self.b4 = nn.Conv1d(2, self.n_channels, 1)
+        self.b0 = nn.Conv2d(sd_n_channels, self.n_channels, 1)
+        self.b1 = nn.Conv2d(sd_n_channels, self.n_channels, 1)
+        self.b2 = nn.Conv1d(2, self.n_channels, 1)
 
-        self.fc0 = nn.Linear(self.dim_in + 2, self.n_channels) 
-            # each subdomain has 3 inputs: (a(x, y), x, y)
+        self.fc0 = nn.Linear(2, self.n_channels)
         self.fc1 = nn.Linear(self.n_channels, 128)
         self.fc2 = nn.Linear(128, self.dim_out)
 
 
-    def forward(self, u_g, u_sd, sd_info, xy):
+    def forward(self, uc_sd, sd_info, xy):
         # u_g: (batch, w1, w2, dim_in)
-        # u_sd: (batch, n_subdomains, w1, w2, dim_in)
+        # u_sd: (batch, n_subdomains, m1, m2, dim_in)
         # sd_info: (batch, n_subdomains, 4)
         # xy: (batch, n_points, 2)
-        batchsize = u_g.shape[0]
+        batchsize = uc_sd.shape[0]
 
         # Encode u_sd
-        grid = self.get_subdomain_grid(u_sd.shape[:-1], sd_info)
-        u_sd = torch.cat((u_sd, grid), dim=-1) 
-            # (batch, n_subdomains, w1, w2, dim_in + 2)
-        u_sd = self.encode_fc(u_sd).reshape(batchsize * self.n_subdomains, 
-            self.width1, self.width2, -1)
-            # (batch * n_subdomains, w1, w2, sd_n_channels)
-        u_sd = u_sd.permute(0, 3, 1, 2)
+        uc_sd = uc_sd.permute(0, 1, 4, 2, 3)
+            # (batch, n_subdomains, dim_in, w1, w2)
+        u1 = self.combine_subdomain_result(uc_sd, sd_info)
+        u1 = self.sd_conv0.forward_noft(u1, self.width1, self.width2)
+        u2 = torch.fft.irfft2(uc_sd, s=(self.width1, self.width2))\
+            .permute(0, 1, 3, 4, 2)
+        grid = self.get_subdomain_grid(
+            [batchsize, self.n_subdomains, self.width1, self.width2], sd_info)
+            # (batch, n_subdomains, w1, w2, 2)
+        u2 = torch.cat((u2, grid), dim=-1)\
+                .permute(0, 1, 4, 2, 3)\
+                .reshape(-1, self.dim_in + 2, self.width1, self.width2)
+            # (batch * n_subdomains, dim_in + 2, w1, w2)
+        uc1 = self.sd_conv1(u2)
+        uc2 = self.sd_w0(u2)
+            # (batch * n_subdomains, sd_nchannels, w1, w2)
+        u2 = uc1 + uc2
+        u2 = F.gelu(u2)
+        u2 = u2.reshape(batchsize, self.n_subdomains, 
+                -1, self.width1, self.width2)
+        u2 = self.combine_subdomain_result(u2, sd_info, make_ft=True)
+        u2 = self.sd_conv2.forward_noft(u2, self.width1, self.width2)
 
-        u_sd1 = self.encode_conv(u_sd)
-        u_sd2 = self.encode_w0(u_sd)
-        u_sd = u_sd1 + u_sd2
-        u_sd = F.gelu(u_sd)
+        grid = self.get_global_grid(
+            [batchsize, self.width1, self.width2])
+        u = self.fc0(xy)
+        u = u.permute(0, 2, 1)
+        grid = grid.permute(0, 3, 1, 2)
 
-        u_sd = u_sd.reshape(batchsize, self.n_subdomains, 
-            -1, self.width1, self.width2)
-        u_sd = self.combine_subdomain_result(u_sd, sd_info)
-            # (batch, n_channels, w1, w2)
+        uc1 = self.conv0(u, x_in=xy)
+        uc3 = self.b0(u1)
+        uc = uc1 + uc3
+        uc = F.gelu(uc)
 
-        grid_g = self.get_global_grid(u_g.shape[:-1])
-        u_g = torch.cat((u_g, grid_g), dim=-1)
-        u_g = self.fc0(u_g)     # (batch, w1, w2, n_channels)
-        u_g = u_g.permute(0, 3, 1, 2)
-        # u = F.pad(u, [0, self.padding, 0, self.padding])
+        uc1 = self.conv1(uc)
+        uc2 = self.w1(uc)
+        uc3 = self.b1(u2)
+        uc = uc1 + uc2 + uc3
+        uc = F.gelu(uc)
 
-        u_g1 = self.conv0(u_g)
-        u_g2 = self.w0(u_g)
-        u_g = u_g1 + u_g2
-        u_g = F.gelu(u_g)
+        uc1 = self.conv2(uc)
+        uc2 = self.w2(uc)
+        uc = uc1 + uc2
+        uc = F.gelu(uc)
 
-        # Combine
-        u = u_g + u_sd
-
-        u1 = self.conv1(u)
-        u2 = self.w1(u)
-        u = u1 + u2
-        u = F.gelu(u)
-
-        u1 = self.conv2(u)
-        u2 = self.w2(u)
-        u = u1 + u2
-        u = F.gelu(u)
-
-        u1 = self.conv3(u)
-        u2 = self.w3(u)
-        u = u1 + u2
-        u = F.gelu(u)
-
-        u = self.conv4(u, x_out=xy)
-        u3 = self.b4(xy.permute(0, 2, 1))
+        u = self.conv3(uc, x_out=xy)
+        u3 = self.b2(xy.permute(0, 2, 1))
         u = u + u3
 
-        # u = u[..., :-self.padding, :-self.padding]
-        # u = u.permute(0, 2, 3, 1)
         u = u.permute(0, 2, 1)
         u = self.fc1(u)
         u = F.gelu(u)
         u = self.fc2(u)
         return u
 
-    def combine_subdomain_result(self, u_sd, sd_info):
-        # u_sd: batchsize, n_subdomains, sd_n_channel, w1, w2, 
+    def combine_subdomain_result(self, u_sd, sd_info, make_ft=False):
+        # u_sd: (batchsize, n_subdomains, channel, w1, w2) or
+        #   (batchsize, n_subdomains, channel, m1, m2)
+        if make_ft:
+            u_sd = torch.fft.rfft2(u_sd)
+            u_sd = torch.concat((
+                u_sd[:, :, :, :self.modes1, :self.modes2],
+                u_sd[:, :, :, -self.modes1:, :self.modes2]
+            ), dim=-2)
 
-        u_ft_sd = torch.fft.rfft2(u_sd)
-        u_ft_sd = torch.concat((
-            u_ft_sd[:, :, :, :self.modes1, :self.modes2],
-            u_ft_sd[:, :, :, -self.modes1:, :self.modes2]
-        ), dim=-2)
-
-        m1 = u_ft_sd.shape[-2]
-        m2 = u_ft_sd.shape[-1]
-
+        m1 = u_sd.shape[-2]
+        m2 = u_sd.shape[-1]
         # Frequency number (m1, m2)
         ky =  torch.cat((torch.arange(start=0, end=self.modes1, step=1), \
                             torch.arange(start=-(self.modes1), end=0, step=1)), 0).reshape(m1,1).repeat(1,m2)
@@ -299,31 +289,19 @@ class NUFNO2d(nn.Module):
         # .unsqueeze(-1).repeat(1, 1, m1, m2)
         kx = kx.reshape(1, 1, m1, m2)
         ky = ky.reshape(1, 1, m1, m2)
-        xymin = sd_info[:, :, 0:2]
-        xylen = sd_info[:, :, 2:4]
 
-        xymin = self.pha_fc0(xymin)
-        xymin = F.tanh(xymin)
-        xymin = self.pha_fc1(xymin)
-        xmin, ymin = xymin[..., 0:1], xymin[..., 1:2]
+        xmin, ymin = sd_info[..., 0:1], sd_info[..., 1:2]
         xmin, ymin = xmin.unsqueeze(-1).repeat(1, 1, m1, m2), \
             ymin.unsqueeze(-1).repeat(1, 1, m1, m2)
 
-        amp = self.amp_fc0(xylen)
-        amp = F.tanh(amp)
-        amp = self.amp_fc1(amp)
-        amp = amp.unsqueeze(-1).repeat(1, 1, m1, m2)
-
-        coef = amp * torch.exp(-1j * (xmin * kx + ymin * ky)).to(torch.cfloat)
+        coef = torch.exp(-1j * 2 * np.pi * (xmin * kx + ymin * ky)).to(torch.cfloat)
         
-        # (batch, n_subdomains, c, m1, m2), (batch, n_subdomains, m1, m2) -> (batch, c, m1, m2)
-        u_ft = torch.einsum("bncxy,bnxy->bcxy", u_ft_sd, coef)
-        u = self.decode_conv.forward_ft(u_ft, self.width1, self.width2)
-
-        return u
-
+        # (batch, n_subdomains, channel, m1, m2), (batch, n_subdomains, m1, m2) -> (batch, channel, m1, m2)
+        u_ft = torch.einsum("bncxy,bnxy->bcxy", u_sd, coef)
+        return u_ft
 
     def get_global_grid(self, _shape):
+        # grid: (batch, w1, w2, 2)
         batchsize, w1, w2 = _shape[0], _shape[1], _shape[2]
         gridx = torch.tensor(np.linspace(0, 1, w1), dtype=torch.float)
         gridx = gridx.reshape(1, w1, 1, 1).repeat([batchsize, 1, w2, 1])
