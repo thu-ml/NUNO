@@ -183,20 +183,26 @@ class NUFNO2d(nn.Module):
         self.sd_conv0 = SpectralConv2d(self.dim_in, sd_n_channels, self.modes1, self.modes2)
         self.sd_conv1 = SpectralConv2d(self.dim_in + 2, sd_n_channels, self.modes1, self.modes2)
         self.sd_conv2 = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2)
+        self.sd_conv1_ = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2)
+        self.sd_conv2_ = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2)
 
         self.sd_w0 = nn.Conv2d(self.dim_in + 2, sd_n_channels, 1)
+        self.sd_w1 = nn.Conv2d(sd_n_channels, sd_n_channels, 1)
 
         self.conv0 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2, self.width1, self.width2)
         self.conv1 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
         self.conv2 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
+        self.conv2_ = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
         self.conv3 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
 
         self.w1 = nn.Conv2d(self.n_channels, self.n_channels, 1)
         self.w2 = nn.Conv2d(self.n_channels, self.n_channels, 1)
+        self.w2_ = nn.Conv2d(self.n_channels, self.n_channels, 1)
 
         self.b0 = nn.Conv2d(sd_n_channels, self.n_channels, 1)
         self.b1 = nn.Conv2d(sd_n_channels, self.n_channels, 1)
         self.b2 = nn.Conv1d(2, self.n_channels, 1)
+        self.b2_ = nn.Conv2d(sd_n_channels, self.n_channels, 1)
 
         self.fc0 = nn.Linear(2, self.n_channels)
         self.fc1 = nn.Linear(self.n_channels, 128)
@@ -215,6 +221,7 @@ class NUFNO2d(nn.Module):
             # (batch, n_subdomains, dim_in, w1, w2)
         u1 = self.combine_subdomain_result(uc_sd, sd_info)
         u1 = self.sd_conv0.forward_noft(u1, self.width1, self.width2)
+
         u2 = torch.fft.irfft2(uc_sd, s=(self.width1, self.width2))\
             .permute(0, 1, 3, 4, 2)
         grid = self.get_subdomain_grid(
@@ -227,12 +234,22 @@ class NUFNO2d(nn.Module):
         uc1 = self.sd_conv1(u2)
         uc2 = self.sd_w0(u2)
             # (batch * n_subdomains, sd_nchannels, w1, w2)
-        u2 = uc1 + uc2
-        u2 = F.gelu(u2)
-        u2 = u2.reshape(batchsize, self.n_subdomains, 
+        uc_sd = uc1 + uc2
+        uc_sd = F.gelu(uc_sd)
+        u2 = uc_sd.reshape(batchsize, self.n_subdomains, 
                 -1, self.width1, self.width2)
         u2 = self.combine_subdomain_result(u2, sd_info, make_ft=True)
         u2 = self.sd_conv2.forward_noft(u2, self.width1, self.width2)
+
+        uc1 = self.sd_conv1_(uc_sd)
+        uc2 = self.sd_w1(uc_sd)
+            # (batch * n_subdomains, sd_nchannels, w1, w2)
+        u3 = uc1 + uc2
+        u3 = F.gelu(u3)
+        u3 = u3.reshape(batchsize, self.n_subdomains, 
+                -1, self.width1, self.width2)
+        u3 = self.combine_subdomain_result(u3, sd_info, make_ft=True)
+        u3 = self.sd_conv2_.forward_noft(u3, self.width1, self.width2)
 
         grid = self.get_global_grid(
             [batchsize, self.width1, self.width2])
@@ -248,6 +265,12 @@ class NUFNO2d(nn.Module):
         uc1 = self.conv1(uc)
         uc2 = self.w1(uc)
         uc3 = self.b1(u2)
+        uc = uc1 + uc2 + uc3
+        uc = F.gelu(uc)
+
+        uc1 = self.conv2_(uc)
+        uc2 = self.w2_(uc)
+        uc3 = self.b2_(u3)
         uc = uc1 + uc2 + uc3
         uc = F.gelu(uc)
 
