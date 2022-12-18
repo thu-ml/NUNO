@@ -3,7 +3,7 @@ Reference
 ----------
 author:   Zongyi Li and Daniel Zhengyu Huang
 source:   https://raw.githubusercontent.com/zongyi-li/Geo-FNO
-reminder: slightly modified, e.g., file path, better output format
+reminder: slightly modified, e.g., file path, better output format, etc.
 """
 
 import torch.nn.functional as F
@@ -140,104 +140,105 @@ class FNO2d(nn.Module):
         return torch.cat((gridx, gridy), dim=-1).to(device)
 
 
-################################################################
-# configs
-################################################################
-PATH = 'data/elasticity/'
-INPUT_PATH = PATH+'Random_UnitCell_mask_10_interp.npy'
-OUTPUT_PATH = PATH+'Random_UnitCell_sigma_10_interp.npy'
-Ntotal = 2000
-ntrain = 1000
-ntest = 200
+if __name__ == "__main__":
+    ################################################################
+    # configs
+    ################################################################
+    PATH = 'data/elasticity/'
+    INPUT_PATH = PATH+'Random_UnitCell_mask_10_interp.npy'
+    OUTPUT_PATH = PATH+'Random_UnitCell_sigma_10_interp.npy'
+    Ntotal = 2000
+    ntrain = 1000
+    ntest = 200
 
-batch_size = 20
-learning_rate = 0.001
+    batch_size = 20
+    learning_rate = 0.001
 
-epochs = 501
-step_size = 100
-gamma = 0.5
+    epochs = 501
+    step_size = 100
+    gamma = 0.5
 
-modes = 12
-width = 32
+    modes = 12
+    width = 32
 
-r = 1
-h = int(((41 - 1) / r) + 1)
-s = h
+    r = 1
+    h = int(((41 - 1) / r) + 1)
+    s = h
 
-################################################################
-# load data and data normalization
-################################################################
-input = np.load(INPUT_PATH)
-input = torch.tensor(input, dtype=torch.float).permute(2,0,1)
-output = np.load(OUTPUT_PATH)
-output = torch.tensor(output, dtype=torch.float).permute(2,0,1)
+    ################################################################
+    # load data and data normalization
+    ################################################################
+    input = np.load(INPUT_PATH)
+    input = torch.tensor(input, dtype=torch.float).permute(2,0,1)
+    output = np.load(OUTPUT_PATH)
+    output = torch.tensor(output, dtype=torch.float).permute(2,0,1)
 
-x_train = input[:Ntotal][:ntrain, ::r, ::r][:, :s, :s]
-y_train = output[:Ntotal][:ntrain, ::r, ::r][:, :s, :s]
+    x_train = input[:Ntotal][:ntrain, ::r, ::r][:, :s, :s]
+    y_train = output[:Ntotal][:ntrain, ::r, ::r][:, :s, :s]
 
-x_test = input[:Ntotal][-ntest:, ::r, ::r][:, :s, :s]
-y_test = output[:Ntotal][-ntest:, ::r, ::r][:, :s, :s]
+    x_test = input[:Ntotal][-ntest:, ::r, ::r][:, :s, :s]
+    y_test = output[:Ntotal][-ntest:, ::r, ::r][:, :s, :s]
 
-x_train = x_train.reshape(ntrain, s, s, 1)
-x_test = x_test.reshape(ntest, s, s, 1)
+    x_train = x_train.reshape(ntrain, s, s, 1)
+    x_test = x_test.reshape(ntest, s, s, 1)
 
-train_loader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(x_train, y_train), 
-    batch_size=batch_size, shuffle=True,
-    generator=torch.Generator(device=device)
-)
-test_loader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(x_test, y_test), 
-    batch_size=batch_size, shuffle=False,
-    generator=torch.Generator(device=device)
-)
+    train_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(x_train, y_train), 
+        batch_size=batch_size, shuffle=True,
+        generator=torch.Generator(device=device)
+    )
+    test_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(x_test, y_test), 
+        batch_size=batch_size, shuffle=False,
+        generator=torch.Generator(device=device)
+    )
 
-################################################################
-# training and evaluation
-################################################################
-model = FNO2d(modes, modes, width).cuda()
-print(count_params(model))
+    ################################################################
+    # training and evaluation
+    ################################################################
+    model = FNO2d(modes, modes, width).cuda()
+    print(count_params(model))
 
-optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+    optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
-myloss = LpLoss(size_average=False)
+    myloss = LpLoss(size_average=False)
 
-for ep in range(epochs):
-    model.train()
-    t1 = default_timer()
-    train_l2 = 0
-    for x, y in train_loader:
-        x, y = x.cuda(), y.cuda()
-        mask = x.clone()
-
-        optimizer.zero_grad()
-        out = model(x)
-        out = out*mask
-
-        loss = myloss(out.view(batch_size, -1), y.view(batch_size, -1))
-        loss.backward()
-
-        optimizer.step()
-        train_l2 += loss.item()
-
-    scheduler.step()
-
-    model.eval()
-    test_l2 = 0.0
-    with torch.no_grad():
-        for x, y in test_loader:
+    for ep in range(epochs):
+        model.train()
+        t1 = default_timer()
+        train_l2 = 0
+        for x, y in train_loader:
             x, y = x.cuda(), y.cuda()
             mask = x.clone()
 
+            optimizer.zero_grad()
             out = model(x)
-            out2 = out * mask
+            out = out*mask
 
-            test_l2 += myloss(out2.view(batch_size, -1), y.view(batch_size, -1)).item()
+            loss = myloss(out.view(batch_size, -1), y.view(batch_size, -1))
+            loss.backward()
 
-    train_l2 /= ntrain
-    test_l2 /= ntest
+            optimizer.step()
+            train_l2 += loss.item()
 
-    t2 = default_timer()
-    print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
-            .format(ep, t2-t1, train_l2, test_l2))
+        scheduler.step()
+
+        model.eval()
+        test_l2 = 0.0
+        with torch.no_grad():
+            for x, y in test_loader:
+                x, y = x.cuda(), y.cuda()
+                mask = x.clone()
+
+                out = model(x)
+                out2 = out * mask
+
+                test_l2 += myloss(out2.view(batch_size, -1), y.view(batch_size, -1)).item()
+
+        train_l2 /= ntrain
+        test_l2 /= ntest
+
+        t2 = default_timer()
+        print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
+                .format(ep, t2-t1, train_l2, test_l2))

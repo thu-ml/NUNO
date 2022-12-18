@@ -3,7 +3,7 @@ Reference
 ----------
 author:   Zongyi Li and Daniel Zhengyu Huang
 source:   https://raw.githubusercontent.com/zongyi-li/Geo-FNO
-reminder: slightly modified, e.g., file path, better output format
+reminder: slightly modified, e.g., file path, better output format, etc.
 """
 
 import torch.nn.functional as F
@@ -253,6 +253,7 @@ class FNO2d(nn.Module):
         gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
         return torch.cat((gridx, gridy), dim=-1).to(device)
 
+
 class IPHI(nn.Module):
     def __init__(self, width=32):
         super(IPHI, self).__init__()
@@ -307,122 +308,123 @@ class IPHI(nn.Module):
         return x + x * xd
 
 
-################################################################
-# configs
-################################################################
-Ntotal = 2000
-ntrain = 1000
-ntest = 200
+if __name__ == "__main__":
+    ################################################################
+    # configs
+    ################################################################
+    Ntotal = 2000
+    ntrain = 1000
+    ntest = 200
 
-batch_size = 20
-learning_rate = 0.001
+    batch_size = 20
+    learning_rate = 0.001
 
-epochs = 501
-step_size = 50
-gamma = 0.5
+    epochs = 501
+    step_size = 50
+    gamma = 0.5
 
-modes = 12
-width = 32
+    modes = 12
+    width = 32
 
-################################################################
-# load data and data normalization
-################################################################
-PATH = 'data/elasticity/'
-PATH_Sigma = PATH+'Random_UnitCell_sigma_10.npy'
-PATH_XY = PATH+'Random_UnitCell_XY_10.npy'
-PATH_rr = PATH+'Random_UnitCell_rr_10.npy'
+    ################################################################
+    # load data and data normalization
+    ################################################################
+    PATH = 'data/elasticity/'
+    PATH_Sigma = PATH+'Random_UnitCell_sigma_10.npy'
+    PATH_XY = PATH+'Random_UnitCell_XY_10.npy'
+    PATH_rr = PATH+'Random_UnitCell_rr_10.npy'
 
-input_rr = np.load(PATH_rr)
-input_rr = torch.tensor(input_rr, dtype=torch.float).permute(1,0)
-input_s = np.load(PATH_Sigma)
-input_s = torch.tensor(input_s, dtype=torch.float).permute(1,0).unsqueeze(-1)
-input_xy = np.load(PATH_XY)
-input_xy = torch.tensor(input_xy, dtype=torch.float).permute(2,0,1)
+    input_rr = np.load(PATH_rr)
+    input_rr = torch.tensor(input_rr, dtype=torch.float).permute(1,0)
+    input_s = np.load(PATH_Sigma)
+    input_s = torch.tensor(input_s, dtype=torch.float).permute(1,0).unsqueeze(-1)
+    input_xy = np.load(PATH_XY)
+    input_xy = torch.tensor(input_xy, dtype=torch.float).permute(2,0,1)
 
-train_rr = input_rr[:ntrain]
-test_rr = input_rr[-ntest:]
-train_s = input_s[:ntrain]
-test_s = input_s[-ntest:]
-train_xy = input_xy[:ntrain]
-test_xy = input_xy[-ntest:]
+    train_rr = input_rr[:ntrain]
+    test_rr = input_rr[-ntest:]
+    train_s = input_s[:ntrain]
+    test_s = input_s[-ntest:]
+    train_xy = input_xy[:ntrain]
+    test_xy = input_xy[-ntest:]
 
-print(train_rr.shape, train_s.shape, train_xy.shape)
+    print(train_rr.shape, train_s.shape, train_xy.shape)
 
-train_loader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(train_rr, train_s, train_xy), 
-    batch_size=batch_size, shuffle=True,
-    generator=torch.Generator(device=device)
-)
-test_loader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(test_rr, test_s, test_xy), 
-    batch_size=batch_size,
-    shuffle=False,
-    generator=torch.Generator(device=device)
-)
+    train_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(train_rr, train_s, train_xy), 
+        batch_size=batch_size, shuffle=True,
+        generator=torch.Generator(device=device)
+    )
+    test_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(test_rr, test_s, test_xy), 
+        batch_size=batch_size,
+        shuffle=False,
+        generator=torch.Generator(device=device)
+    )
 
-################################################################
-# training and evaluation
-################################################################
-model = FNO2d(modes, modes, width, in_channels=2, out_channels=1).cuda()
-model_iphi = IPHI().cuda()
-# model_iphi = FNO2d(modes, modes, width, in_channels=2, out_channels=2, is_skip=True).cuda()
-print(count_params(model), count_params(model_iphi))
+    ################################################################
+    # training and evaluation
+    ################################################################
+    model = FNO2d(modes, modes, width, in_channels=2, out_channels=1).cuda()
+    model_iphi = IPHI().cuda()
+    # model_iphi = FNO2d(modes, modes, width, in_channels=2, out_channels=2, is_skip=True).cuda()
+    print(count_params(model), count_params(model_iphi))
 
-params = list(model.parameters()) + list(model_iphi.parameters())
-optimizer = Adam(params, lr=learning_rate, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+    params = list(model.parameters()) + list(model_iphi.parameters())
+    optimizer = Adam(params, lr=learning_rate, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
-myloss = LpLoss(size_average=False)
-N_sample = 1000
-for ep in range(epochs):
-    model.train()
-    t1 = default_timer()
-    train_l2 = 0
-    train_reg = 0
-    for rr, sigma, mesh in train_loader:
-        rr, sigma, mesh = rr.cuda(), sigma.cuda(), mesh.cuda()
-        samples_x = torch.rand(batch_size, N_sample, 2).cuda() * 3 -1
-
-        optimizer.zero_grad()
-        out = model(mesh, code=rr, iphi=model_iphi)
-        samples_xi = model_iphi(samples_x, code=rr)
-
-        loss_data = myloss(out.view(batch_size, -1), sigma.view(batch_size, -1))
-        loss_reg = myloss(samples_xi, samples_x)
-        loss = loss_data + 0.000 * loss_reg
-        loss.backward()
-
-        optimizer.step()
-        train_l2 += loss_data.item()
-        train_reg += loss_reg.item()
-
-    scheduler.step()
-
-    model.eval()
-    test_l2 = 0.0
-    with torch.no_grad():
-        for rr, sigma, mesh in test_loader:
+    myloss = LpLoss(size_average=False)
+    N_sample = 1000
+    for ep in range(epochs):
+        model.train()
+        t1 = default_timer()
+        train_l2 = 0
+        train_reg = 0
+        for rr, sigma, mesh in train_loader:
             rr, sigma, mesh = rr.cuda(), sigma.cuda(), mesh.cuda()
-            # out = model(mesh, iphi=model_iphi)
+            samples_x = torch.rand(batch_size, N_sample, 2).cuda() * 3 -1
+
+            optimizer.zero_grad()
             out = model(mesh, code=rr, iphi=model_iphi)
-            test_l2 += myloss(out.view(batch_size, -1), sigma.view(batch_size, -1)).item()
+            samples_xi = model_iphi(samples_x, code=rr)
 
-    train_l2 /= ntrain
-    train_reg /= ntrain
-    test_l2 /= ntest
+            loss_data = myloss(out.view(batch_size, -1), sigma.view(batch_size, -1))
+            loss_reg = myloss(samples_xi, samples_x)
+            loss = loss_data + 0.000 * loss_reg
+            loss.backward()
 
-    t2 = default_timer()
-    print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Reg: {:>4e} Test_L2: {:>4e}"
-            .format(ep, t2-t1, train_l2, train_reg, test_l2))
+            optimizer.step()
+            train_l2 += loss_data.item()
+            train_reg += loss_reg.item()
 
-    if ep%100==0:
-        XY = mesh[-1].squeeze().detach().cpu().numpy()
-        truth = sigma[-1].squeeze().detach().cpu().numpy()
-        pred = out[-1].squeeze().detach().cpu().numpy()
+        scheduler.step()
 
-        # lims = dict(cmap='RdBu_r', vmin=truth.min(), vmax=truth.max())
-        # fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(12, 4))
-        # ax[0].scatter(XY[:, 0], XY[:, 1], 100, truth, edgecolor='w', lw=0.1, **lims)
-        # ax[1].scatter(XY[:, 0], XY[:, 1], 100, pred, edgecolor='w', lw=0.1, **lims)
-        # ax[2].scatter(XY[:, 0], XY[:, 1], 100, truth - pred, edgecolor='w', lw=0.1, **lims)
-        # fig.show()
+        model.eval()
+        test_l2 = 0.0
+        with torch.no_grad():
+            for rr, sigma, mesh in test_loader:
+                rr, sigma, mesh = rr.cuda(), sigma.cuda(), mesh.cuda()
+                # out = model(mesh, iphi=model_iphi)
+                out = model(mesh, code=rr, iphi=model_iphi)
+                test_l2 += myloss(out.view(batch_size, -1), sigma.view(batch_size, -1)).item()
+
+        train_l2 /= ntrain
+        train_reg /= ntrain
+        test_l2 /= ntest
+
+        t2 = default_timer()
+        print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Reg: {:>4e} Test_L2: {:>4e}"
+                .format(ep, t2-t1, train_l2, train_reg, test_l2))
+
+        if ep%100==0:
+            XY = mesh[-1].squeeze().detach().cpu().numpy()
+            truth = sigma[-1].squeeze().detach().cpu().numpy()
+            pred = out[-1].squeeze().detach().cpu().numpy()
+
+            # lims = dict(cmap='RdBu_r', vmin=truth.min(), vmax=truth.max())
+            # fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(12, 4))
+            # ax[0].scatter(XY[:, 0], XY[:, 1], 100, truth, edgecolor='w', lw=0.1, **lims)
+            # ax[1].scatter(XY[:, 0], XY[:, 1], 100, pred, edgecolor='w', lw=0.1, **lims)
+            # ax[2].scatter(XY[:, 0], XY[:, 1], 100, truth - pred, edgecolor='w', lw=0.1, **lims)
+            # fig.show()
