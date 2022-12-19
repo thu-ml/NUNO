@@ -2,173 +2,136 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from ..elasticity import geofno
+
 
 ################################################################
-# fourier layer
+# Spectral Convolution Layer
 ################################################################
-class SpectralConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, modes1, modes2, s1=32, s2=32):
-        super(SpectralConv2d, self).__init__()
-
-        """
-        2D Fourier layer. It does FFT, linear transform, and Inverse FFT.    
-        """
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.modes1 = modes1  # Number of Fourier modes to multiply, at most floor(N/2) + 1
-        self.modes2 = modes2
-        self.s1 = s1
-        self.s2 = s2
-
-        self.scale = (1 / (in_channels * out_channels))
-        self.weights1 = nn.Parameter(
-            self.scale * torch.rand(in_channels, out_channels, self.modes1, self.modes2, dtype=torch.cfloat))
-        self.weights2 = nn.Parameter(
-            self.scale * torch.rand(in_channels, out_channels, self.modes1, self.modes2, dtype=torch.cfloat))
-
-    # Complex multiplication
-    def compl_mul2d(self, input, weights):
-        # (batch, in_channel, x,y ), (in_channel, out_channel, x,y) -> (batch, out_channel, x,y)
-        return torch.einsum("bixy,ioxy->boxy", input, weights)
-
-    def forward(self, u, x_in=None, x_out=None, iphi=None, code=None):
-        batchsize = u.shape[0]
-
-        # Compute Fourier coeffcients up to factor of e^(- something constant)
-        if x_in == None:
-            u_ft = torch.fft.rfft2(u)
-            s1 = u.size(-2)
-            s2 = u.size(-1)
-        else:
-            u_ft = self.fft2d(u, x_in, iphi, code)
-            s1 = self.s1
-            s2 = self.s2
-
-        # Multiply relevant Fourier modes
-        # print(u.shape, u_ft.shape)
-        factor1 = self.compl_mul2d(u_ft[:, :, :self.modes1, :self.modes2], self.weights1)
-        factor2 = self.compl_mul2d(u_ft[:, :, -self.modes1:, :self.modes2], self.weights2)
-
-        # Return to physical space
-        if x_out == None:
-            out_ft = torch.zeros(batchsize, self.out_channels, s1, s2 // 2 + 1, dtype=torch.cfloat, device=u.device)
-            out_ft[:, :, :self.modes1, :self.modes2] = factor1
-            out_ft[:, :, -self.modes1:, :self.modes2] = factor2
-            u = torch.fft.irfft2(out_ft, s=(s1, s2))
-        else:
-            out_ft = torch.cat([factor1, factor2], dim=-2)
-            u = self.ifft2d(out_ft, x_out, iphi, code)
-
-        return u
+class SpectralConv2d(geofno.SpectralConv2d):
     
-    def forward_noft(self, x_ft, width1, width2):
+    def forward_noft(self, x_ft):
+        '''
+        Perform spectral convolution for inputs which live in frequency
+        domain instead of physical domain
+        '''
+        # Note: we do not run FFT since x_ft is already in frequency space
         x_ft1 = self.compl_mul2d(x_ft[:, :, :self.modes1, :self.modes2], self.weights1)
         x_ft2 = self.compl_mul2d(x_ft[:, :, -self.modes1:, :self.modes2], self.weights2)
 
         # Multiply relevant Fourier modes
         out_ft = torch.zeros(x_ft.shape[0], self.out_channels, 
-            width1, width2 // 2 + 1, dtype=torch.cfloat)
+            self.s1, self.s2 // 2 + 1, dtype=torch.cfloat)
         out_ft[:, :, :self.modes1, :self.modes2] = x_ft1
         out_ft[:, :, -self.modes1:, :self.modes2] = x_ft2
 
         #Return to physical space
-        x = torch.fft.irfft2(out_ft, s=(width1, width2))
+        x = torch.fft.irfft2(out_ft, s=(self.s1, self.s2))
         return x
 
-    def fft2d(self, u, x_in, iphi=None, code=None):
-        # u (batch, channels, n)
-        # x_in (batch, n, 2) locations in [0,1]*[0,1]
-        # iphi: function: x_in -> x_c
 
-        batchsize = x_in.shape[0]
-        N = x_in.shape[1]
-        device = x_in.device
-        m1 = 2 * self.modes1
-        m2 = 2 * self.modes2 - 1
+################################################################
+# Fourier Layer
+################################################################
+class FourierLayer(nn.Module):
+    '''
+    The Fourier layer contains a spectral convolution layer, 
+    and a spatial linear transform.
+    Note: compared with original implementation of FNO, we
+    add a BatchNorm and a Dropout layer.
+    '''
+    def __init__(self, in_channels, out_channels, modes1, modes2, 
+        width1=32, width2=32, dropout_rate=0.1, activation=True, batch_norm=True, 
+        transform=True, merging=False, merge_channels=None, merge_1d=False):
+        '''
+        `transform`: bool, optional
+        Whether to perform linear transform in the physical space.
+        The default is `True`.
+        `merging`: bool, optional
+        Whether to merge external inputs from another branch.
+        The default is `False`.
+        `merge_channels`: int, optional
+        The number of channels of the external inputs.
+        The default is `None` which means it equals to `in_channels`.
+        Note: this value is valid if `merging==True`.
+        `merge_1d`: bool, optional
+        Whether the external inputs are 1d sequences or 2d images.
+        The default is `False` which means they are 2d images.
+        '''
+        super(FourierLayer, self).__init__()
+        self.activation = activation
+        self.batch_norm = batch_norm
+        self.transform = transform
+        self.merging = merging
+        if batch_norm:
+            self.norm = nn.BatchNorm2d(in_channels, eps=1e-6)
+        self.conv = SpectralConv2d(in_channels, out_channels, 
+            modes1, modes2, width1, width2)
+        if transform:
+            self.w = nn.Conv2d(in_channels, out_channels, 1)
+        if merging:
+            if merge_1d:
+                self.b = nn.Conv1d(
+                    merge_channels if merge_channels is not None 
+                    else in_channels, out_channels, 1)
+            else:
+                self.b = nn.Conv2d(
+                    merge_channels if merge_channels is not None 
+                    else in_channels, out_channels, 1)
+        self.dropout = nn.Dropout(dropout_rate)
 
-        # wavenumber (m1, m2)
-        k_x1 =  torch.cat((torch.arange(start=0, end=self.modes1, step=1), \
-                            torch.arange(start=-(self.modes1), end=0, step=1)), 0).reshape(m1,1).repeat(1,m2).to(device)
-        k_x2 =  torch.cat((torch.arange(start=0, end=self.modes2, step=1), \
-                            torch.arange(start=-(self.modes2-1), end=0, step=1)), 0).reshape(1,m2).repeat(m1,1).to(device)
-
-        # print(x_in.shape)
-   
-        x = x_in
-
-
-        # print(x.shape)
-        # K = <y, k_x>,  (batch, N, m1, m2)
-        K1 = torch.outer(x[...,0].view(-1), k_x1.view(-1)).reshape(batchsize, N, m1, m2)
-        K2 = torch.outer(x[...,1].view(-1), k_x2.view(-1)).reshape(batchsize, N, m1, m2)
-        K = K1 + K2
-
-        # basis (batch, N, m1, m2)
-        basis = torch.exp(-1j * 2 * np.pi * K).to(device)
-
-        # Y (batch, channels, N)
-        u = u + 0j
-        Y = torch.einsum("bcn,bnxy->bcxy", u, basis)
-        return Y
-
-    def ifft2d(self, u_ft, x_out, iphi=None, code=None):
-        # u_ft (batch, channels, kmax, kmax)
-        # x_out (batch, N, 2) locations in [0,1]*[0,1]
-        # iphi: function: x_out -> x_c
-
-        batchsize = x_out.shape[0]
-        N = x_out.shape[1]
-        device = x_out.device
-        m1 = 2 * self.modes1
-        m2 = 2 * self.modes2 - 1
-
-        # wavenumber (m1, m2)
-        k_x1 =  torch.cat((torch.arange(start=0, end=self.modes1, step=1), \
-                            torch.arange(start=-(self.modes1), end=0, step=1)), 0).reshape(m1,1).repeat(1,m2).to(device)
-        k_x2 =  torch.cat((torch.arange(start=0, end=self.modes2, step=1), \
-                            torch.arange(start=-(self.modes2-1), end=0, step=1)), 0).reshape(1,m2).repeat(m1,1).to(device)
-
-        
-        x = x_out
-
-        # K = <y, k_x>,  (batch, N, m1, m2)
-        K1 = torch.outer(x[:,:,0].view(-1), k_x1.view(-1)).reshape(batchsize, N, m1, m2)
-        K2 = torch.outer(x[:,:,1].view(-1), k_x2.view(-1)).reshape(batchsize, N, m1, m2)
-        K = K1 + K2
-
-        # basis (batch, N, m1, m2)
-        basis = torch.exp(1j * 2 * np.pi * K).to(device)
-
-        # coeff (batch, channels, m1, m2)
-        u_ft2 = u_ft[..., 1:].flip(-1, -2).conj()
-        u_ft = torch.cat([u_ft, u_ft2], dim=-1)
-
-        # Y (batch, channels, N)
-        Y = torch.einsum("bcxy,bnxy->bcn", u_ft, basis)
-        Y = Y.real
-        return Y
-
+    def forward(self, x, external_input=None, x_in=None, x_out=None):
+        '''
+        `x_in`, `x_out`: the point coordinates (when input or output live
+        on a point cloud).
+        Note: please make sure `merging==True` if `external_input` is
+        specified.
+        '''
+        if self.batch_norm:
+            # x = self.norm(x)
+            pass
+        y = self.conv(x, x_in=x_in, x_out=x_out)
+        if self.transform:
+            y = y + self.w(x)
+        if external_input is not None:
+            y = y + self.b(external_input)
+        if self.activation:
+            y = F.gelu(y)
+        # y = self.dropout(y)
+        return y
 
 
 class NUFNO2d(nn.Module):
+    """
+    Non-Uniform 2D Fourier Neural Network 
+    It contains two branches:
+    1. the main branch takes point clouds as inputs,
+    which are then passed through 5 Fourier layers.
+    The first layer maps the point cloud into an latent image
+    via a NUFFT (whose implementation is a naive DFT, the same as 
+    in Geo-FNO), while the last layer maps the latent image back
+    to the point cloud via a INUFFT.
+    2. another branch takes the frequency modes of subdomain images as inputs
+    (which is interpolated from the point cloud to the subdomain grid). 
+    These images are passed through several Fourier layers independently. 
+    The outputs are then combined to a global image and merged into main branch.
+    This branch is expected to learn the local features.
+
+    Input:
+    1. `u_sd`, frequency modes of subdomain images.
+    Shape: (batchsize, n_subdomains, modes1, modes2, dim_in).
+    2. `sd_info`, subdomain information (xmin, ymin, xlen, ylen).
+    Shape: (batchsize, n_subdomains, 4).
+    3. `xy`, coordinates of the point cloud.
+    Shape: (batchsize, n_points, 2).
+
+    Output:
+    Prediction of values of the target function at the point cloud.
+    Shape: (batchsize, n_points, dim_out).
+    """
     def __init__(self, modes1=16, modes2=16, width1=32, width2=32, 
         n_channels=32, n_subdomains=32, dim_in=1, dim_out=1):
         super(NUFNO2d, self).__init__()
-
-        """
-        The overall network. It contains 4 layers of the Fourier layer.
-        1. Lift the input to the desire channel dimension by self.fc0 .
-        2. 4 layers of the integral operators u' = (W + K)(u).
-            W defined by self.w; K defined by self.conv .
-        3. Project from the channel space to the output space by self.fc1 and self.fc2 .
-        
-        input: the solution of the coefficient function and locations (a(x, y), x, y)
-        input shape: (batchsize, x=s, y=s, c=3)
-        output: the solution 
-        output shape: (batchsize, x=s, y=s, c=1)
-        """
-
         self.modes1 = modes1
         self.modes2 = modes2
         self.width1 = width1
@@ -178,51 +141,74 @@ class NUFNO2d(nn.Module):
         self.dim_in = dim_in
         self.dim_out = dim_out
 
-        # Encoder
+        # Auxiliary branch
+        # Extract local features from subdomain images and
+        # compensate the interpolation errors in the main branch
         sd_n_channels = self.n_channels // self.n_subdomains
-        self.sd_conv0 = SpectralConv2d(self.dim_in, sd_n_channels, self.modes1, self.modes2)
-        self.sd_conv1 = SpectralConv2d(self.dim_in + 2, sd_n_channels, self.modes1, self.modes2)
-        self.sd_conv2 = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2)
-        self.sd_conv1_ = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2)
-        self.sd_conv2_ = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2)
+        self.sd_layer0 = FourierLayer(self.dim_in + 2, sd_n_channels, self.modes1, self.modes2)
+        self.sd_layer1 = FourierLayer(sd_n_channels, sd_n_channels, self.modes1, self.modes2)
 
-        self.sd_w0 = nn.Conv2d(self.dim_in + 2, sd_n_channels, 1)
-        self.sd_w1 = nn.Conv2d(sd_n_channels, sd_n_channels, 1)
+        self.sd_conv0 = SpectralConv2d(self.dim_in, sd_n_channels, self.modes1, self.modes2, 
+            self.width1, self.width2)
+        self.sd_conv1 = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2,
+            self.width1, self.width2)
+        self.sd_conv2 = SpectralConv2d(sd_n_channels, sd_n_channels, self.modes1, self.modes2,
+            self.width1, self.width2)
 
-        self.conv0 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2, self.width1, self.width2)
-        self.conv1 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
-        self.conv2 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
-        self.conv2_ = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
-        self.conv3 = SpectralConv2d(self.n_channels, self.n_channels, self.modes1, self.modes2)
+        # Main branch
+        # Conventional Fourier layers, extract global features
+        self.layer0 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2, 
+            self.width1, self.width2, batch_norm=False, transform=False, merging=True, 
+            merge_channels=sd_n_channels)
+        self.layer1 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2, 
+            merging=True, merge_channels=sd_n_channels)
+        self.layer2 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2, 
+            merging=True, merge_channels=sd_n_channels)
+        self.layer3 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2)
+        self.layer4 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2, 
+            activation=False, transform=False, merging=True, merge_channels=2, merge_1d=True)
 
-        self.w1 = nn.Conv2d(self.n_channels, self.n_channels, 1)
-        self.w2 = nn.Conv2d(self.n_channels, self.n_channels, 1)
-        self.w2_ = nn.Conv2d(self.n_channels, self.n_channels, 1)
-
-        self.b0 = nn.Conv2d(sd_n_channels, self.n_channels, 1)
-        self.b1 = nn.Conv2d(sd_n_channels, self.n_channels, 1)
-        self.b2 = nn.Conv1d(2, self.n_channels, 1)
-        self.b2_ = nn.Conv2d(sd_n_channels, self.n_channels, 1)
-
+        # Fully-connected layers
         self.fc0 = nn.Linear(2, self.n_channels)
         self.fc1 = nn.Linear(self.n_channels, 128)
         self.fc2 = nn.Linear(128, self.dim_out)
 
 
-    def forward(self, uc_sd, sd_info, xy):
-        # u_g: (batch, w1, w2, dim_in)
+    def forward(self, u_sd, sd_info, xy):
         # u_sd: (batch, n_subdomains, m1, m2, dim_in)
         # sd_info: (batch, n_subdomains, 4)
         # xy: (batch, n_points, 2)
-        batchsize = uc_sd.shape[0]
+        # modes1, modes2 are abbreviated as m1, m2
+        # width1, width2 are abbreviated as w1, w2
 
-        # Encode u_sd
-        uc_sd = uc_sd.permute(0, 1, 4, 2, 3)
+        # Auxiliary branch
+        u1, u2, u3 = self.auxiliary_branch(u_sd, sd_info)
+
+        u = self.fc0(xy)
+        u = u.permute(0, 2, 1)
+
+        u = self.layer0(u, u1, x_in=xy)
+        u = self.layer1(u, u2)
+        u = self.layer2(u, u3)
+        u = self.layer3(u)
+        u = self.layer4(u, xy.permute(0, 2, 1), x_out=xy)
+
+        u = u.permute(0, 2, 1)
+        u = self.fc1(u)
+        u = F.gelu(u)
+        u = self.fc2(u)
+        # u: (batch, n_points, dim_out)
+        return u
+
+    def auxiliary_branch(self, u_sd, sd_info):
+        batchsize = u_sd.shape[0]
+        u_sd = u_sd.permute(0, 1, 4, 2, 3)
             # (batch, n_subdomains, dim_in, w1, w2)
-        u1 = self.combine_subdomain_result(uc_sd, sd_info)
-        u1 = self.sd_conv0.forward_noft(u1, self.width1, self.width2)
 
-        u2 = torch.fft.irfft2(uc_sd, s=(self.width1, self.width2))\
+        u1 = self.combine_subdomain_result(u_sd, sd_info)
+        u1 = self.sd_conv0.forward_noft(u1)
+
+        u2 = torch.fft.irfft2(u_sd, s=(self.width1, self.width2))\
             .permute(0, 1, 3, 4, 2)
         grid = self.get_subdomain_grid(
             [batchsize, self.n_subdomains, self.width1, self.width2], sd_info)
@@ -231,65 +217,27 @@ class NUFNO2d(nn.Module):
                 .permute(0, 1, 4, 2, 3)\
                 .reshape(-1, self.dim_in + 2, self.width1, self.width2)
             # (batch * n_subdomains, dim_in + 2, w1, w2)
-        uc1 = self.sd_conv1(u2)
-        uc2 = self.sd_w0(u2)
+        tmp = self.sd_layer0(u2)
             # (batch * n_subdomains, sd_nchannels, w1, w2)
-        uc_sd = uc1 + uc2
-        uc_sd = F.gelu(uc_sd)
-        u2 = uc_sd.reshape(batchsize, self.n_subdomains, 
+        u2 = tmp.reshape(batchsize, self.n_subdomains, 
                 -1, self.width1, self.width2)
         u2 = self.combine_subdomain_result(u2, sd_info, make_ft=True)
-        u2 = self.sd_conv2.forward_noft(u2, self.width1, self.width2)
+        u2 = self.sd_conv1.forward_noft(u2)
 
-        uc1 = self.sd_conv1_(uc_sd)
-        uc2 = self.sd_w1(uc_sd)
+        u3 = self.sd_layer1(tmp)
             # (batch * n_subdomains, sd_nchannels, w1, w2)
-        u3 = uc1 + uc2
-        u3 = F.gelu(u3)
         u3 = u3.reshape(batchsize, self.n_subdomains, 
                 -1, self.width1, self.width2)
         u3 = self.combine_subdomain_result(u3, sd_info, make_ft=True)
-        u3 = self.sd_conv2_.forward_noft(u3, self.width1, self.width2)
+        u3 = self.sd_conv2.forward_noft(u3)
 
-        grid = self.get_global_grid(
-            [batchsize, self.width1, self.width2])
-        u = self.fc0(xy)
-        u = u.permute(0, 2, 1)
-        grid = grid.permute(0, 3, 1, 2)
-
-        uc1 = self.conv0(u, x_in=xy)
-        uc3 = self.b0(u1)
-        uc = uc1 + uc3
-        uc = F.gelu(uc)
-
-        uc1 = self.conv1(uc)
-        uc2 = self.w1(uc)
-        uc3 = self.b1(u2)
-        uc = uc1 + uc2 + uc3
-        uc = F.gelu(uc)
-
-        uc1 = self.conv2_(uc)
-        uc2 = self.w2_(uc)
-        uc3 = self.b2_(u3)
-        uc = uc1 + uc2 + uc3
-        uc = F.gelu(uc)
-
-        uc1 = self.conv2(uc)
-        uc2 = self.w2(uc)
-        uc = uc1 + uc2
-        uc = F.gelu(uc)
-
-        u = self.conv3(uc, x_out=xy)
-        u3 = self.b2(xy.permute(0, 2, 1))
-        u = u + u3
-
-        u = u.permute(0, 2, 1)
-        u = self.fc1(u)
-        u = F.gelu(u)
-        u = self.fc2(u)
-        return u
+        return u1, u2, u3
 
     def combine_subdomain_result(self, u_sd, sd_info, make_ft=False):
+        '''
+        Combine the frequency modes of all the subdomains to
+        obtain the global frequency mode.
+        '''
         # u_sd: (batchsize, n_subdomains, channel, w1, w2) or
         #   (batchsize, n_subdomains, channel, m1, m2)
         if make_ft:
@@ -299,17 +247,16 @@ class NUFNO2d(nn.Module):
                 u_sd[:, :, :, -self.modes1:, :self.modes2]
             ), dim=-2)
 
+        # Frequency number (m1, m2)
         m1 = u_sd.shape[-2]
         m2 = u_sd.shape[-1]
-        # Frequency number (m1, m2)
         ky =  torch.cat((torch.arange(start=0, end=self.modes1, step=1), \
                             torch.arange(start=-(self.modes1), end=0, step=1)), 0).reshape(m1,1).repeat(1,m2)
         kx =  torch.arange(start=0, end=self.modes2, step=1).reshape(1,m2).repeat(m1,1)
         
         # Combination coefficients
         # exp(-j * 2pi * (xmin/tot_xlen * kx + ymin/tot_ylen * ky)),
-        # where tot_xlen == tot_ylen == for this case
-        # .unsqueeze(-1).repeat(1, 1, m1, m2)
+        # where tot_xlen == tot_ylen == 1 for this case
         kx = kx.reshape(1, 1, m1, m2)
         ky = ky.reshape(1, 1, m1, m2)
 
@@ -319,20 +266,15 @@ class NUFNO2d(nn.Module):
 
         coef = torch.exp(-1j * 2 * np.pi * (xmin * kx + ymin * ky)).to(torch.cfloat)
         
-        # (batch, n_subdomains, channel, m1, m2), (batch, n_subdomains, m1, m2) -> (batch, channel, m1, m2)
+        # (batch, n_subdomains, channel, m1, m2), (batch, n_subdomains, m1, m2) 
+        # -> (batch, channel, m1, m2)
         u_ft = torch.einsum("bncxy,bnxy->bcxy", u_sd, coef)
         return u_ft
 
-    def get_global_grid(self, _shape):
-        # grid: (batch, w1, w2, 2)
-        batchsize, w1, w2 = _shape[0], _shape[1], _shape[2]
-        gridx = torch.tensor(np.linspace(0, 1, w1), dtype=torch.float)
-        gridx = gridx.reshape(1, w1, 1, 1).repeat([batchsize, 1, w2, 1])
-        gridy = torch.tensor(np.linspace(0, 1, w2), dtype=torch.float)
-        gridy = gridy.reshape(1, 1, w2, 1).repeat([batchsize, w1, 1, 1])
-        return torch.cat((gridx, gridy), dim=-1)
-
     def get_subdomain_grid(self, _shape, sd_info):
+        '''
+        Generate grid coordinates for each subdomain.
+        '''
         # grid: (batch, n_subdomains, w1, w2, 2)
         batchsize, n_subdomains, w1, w2 = _shape
         xmin, ymin, xlen, ylen = \
