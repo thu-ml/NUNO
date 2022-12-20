@@ -7,15 +7,10 @@ reminder: slightly modified, e.g., file path, better output format, etc.
 """
 
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
 from timeit import default_timer
-from util.utilities3 import *
+from util.utilities import *
 from torch.optim import Adam
 
-torch.manual_seed(0)
-np.random.seed(0)
-torch.cuda.manual_seed(0)
-torch.backends.cudnn.deterministic = True
 
 ################################################################
 # fourier layer
@@ -308,48 +303,28 @@ class IPHI(nn.Module):
         return x + x * xd
 
 
-if __name__ == "__main__":
-    ################################################################
-    # configs
-    ################################################################
-    Ntotal = 2000
-    ntrain = 1000
-    ntest = 200
+################################################################
+# configs
+################################################################
+Ntotal = 2000
+ntrain = 1000
+ntest = 200
 
-    batch_size = 20
-    learning_rate = 0.001
+batch_size = 20
+learning_rate = 0.001
 
-    epochs = 501
-    step_size = 50
-    gamma = 0.5
+epochs = 501
+step_size = 50
+gamma = 0.5
 
-    modes = 12
-    width = 32
+modes = 12
+width = 32
 
-    ################################################################
-    # load data and data normalization
-    ################################################################
-    PATH = 'data/elasticity/'
-    PATH_Sigma = PATH+'Random_UnitCell_sigma_10.npy'
-    PATH_XY = PATH+'Random_UnitCell_XY_10.npy'
-    PATH_rr = PATH+'Random_UnitCell_rr_10.npy'
 
-    input_rr = np.load(PATH_rr)
-    input_rr = torch.tensor(input_rr, dtype=torch.float).permute(1,0)
-    input_s = np.load(PATH_Sigma)
-    input_s = torch.tensor(input_s, dtype=torch.float).permute(1,0).unsqueeze(-1)
-    input_xy = np.load(PATH_XY)
-    input_xy = torch.tensor(input_xy, dtype=torch.float).permute(2,0,1)
-
-    train_rr = input_rr[:ntrain]
-    test_rr = input_rr[-ntest:]
-    train_s = input_s[:ntrain]
-    test_s = input_s[-ntest:]
-    train_xy = input_xy[:ntrain]
-    test_xy = input_xy[-ntest:]
-
-    print(train_rr.shape, train_s.shape, train_xy.shape)
-
+################################################################
+# training and evaluation
+################################################################
+def main(train_rr, train_s, train_xy, test_rr, test_s, test_xy):
     train_loader = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(train_rr, train_s, train_xy), 
         batch_size=batch_size, shuffle=True,
@@ -362,9 +337,6 @@ if __name__ == "__main__":
         generator=torch.Generator(device=device)
     )
 
-    ################################################################
-    # training and evaluation
-    ################################################################
     model = FNO2d(modes, modes, width, in_channels=2, out_channels=1).cuda()
     model_iphi = IPHI().cuda()
     # model_iphi = FNO2d(modes, modes, width, in_channels=2, out_channels=2, is_skip=True).cuda()
@@ -417,14 +389,50 @@ if __name__ == "__main__":
         print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Reg: {:>4e} Test_L2: {:>4e}"
                 .format(ep, t2-t1, train_l2, train_reg, test_l2))
 
-        if ep%100==0:
-            XY = mesh[-1].squeeze().detach().cpu().numpy()
-            truth = sigma[-1].squeeze().detach().cpu().numpy()
-            pred = out[-1].squeeze().detach().cpu().numpy()
+    # Return final results
+    return train_l2, test_l2
 
-            # lims = dict(cmap='RdBu_r', vmin=truth.min(), vmax=truth.max())
-            # fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(12, 4))
-            # ax[0].scatter(XY[:, 0], XY[:, 1], 100, truth, edgecolor='w', lw=0.1, **lims)
-            # ax[1].scatter(XY[:, 0], XY[:, 1], 100, pred, edgecolor='w', lw=0.1, **lims)
-            # ax[2].scatter(XY[:, 0], XY[:, 1], 100, truth - pred, edgecolor='w', lw=0.1, **lims)
-            # fig.show()
+
+
+if __name__ == "__main__":
+    ################################################################
+    # load data and data normalization
+    ################################################################
+    PATH = 'data/elasticity/'
+    PATH_Sigma = PATH+'Random_UnitCell_sigma_10.npy'
+    PATH_XY = PATH+'Random_UnitCell_XY_10.npy'
+    PATH_rr = PATH+'Random_UnitCell_rr_10.npy'
+
+    input_rr = np.load(PATH_rr)
+    input_rr = torch.tensor(input_rr, dtype=torch.float).permute(1,0)
+    input_s = np.load(PATH_Sigma)
+    input_s = torch.tensor(input_s, dtype=torch.float).permute(1,0).unsqueeze(-1)
+    input_xy = np.load(PATH_XY)
+    input_xy = torch.tensor(input_xy, dtype=torch.float).permute(2,0,1)
+
+    train_rr = input_rr[:ntrain]
+    test_rr = input_rr[-ntest:]
+    train_s = input_s[:ntrain]
+    test_s = input_s[-ntest:]
+    train_xy = input_xy[:ntrain]
+    test_xy = input_xy[-ntest:]
+
+    print(train_rr.shape, train_s.shape, train_xy.shape)
+
+
+    ################################################################
+    # re-experiment with different random seeds
+    ################################################################
+    train_l2_res = []
+    test_l2_res = [] 
+    for i in range(5):
+        print("=== Round %d ==="%(i+1))
+        set_random_seed(SEED_LIST[i])
+        train_l2, test_l2 = main(train_rr, train_s, train_xy, 
+            test_rr, test_s, test_xy)
+        train_l2_res.append(train_l2)
+        test_l2_res.append(test_l2)
+    print("=== Finish ===")
+    for i in range(5):
+        print("[Round {}] Train_L2: {:>4e} Test_L2: {:>4e}"
+                .format(i+1, train_l2_res[i], test_l2_res[i]))

@@ -3,7 +3,7 @@ Reference
 ----------
 author:   Zongyi Li and Daniel Zhengyu Huang
 source:   https://raw.githubusercontent.com/zongyi-li/Geo-FNO
-reminder: slightly modified
+reminder: we add some utilities, e.g., set_random_seed().
 """
 
 import torch
@@ -13,16 +13,32 @@ import torch.nn as nn
 
 import operator
 from functools import reduce
+
+
 #################################################
-#
+# Random Seeds
+#################################################
+SEED_LIST = [2021, 2022, 2023, 2024, 2025]
+
+# Specify a random seed
+# Note: reproducibility is not strictly guaranteed across different hardwares.
+# We refer to https://pytorch.org/docs/stable/notes/randomness.html
+def set_random_seed(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+
+
+#################################################
 # Utilities
-#
 #################################################
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if torch.cuda.is_available():
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
-# reading data
+
+# Reading data
 class MatReader(object):
     def __init__(self, file_path, to_torch=True, to_cuda=False, to_float=True):
         super(MatReader, self).__init__()
@@ -75,7 +91,8 @@ class MatReader(object):
     def set_float(self, to_float):
         self.to_float = to_float
 
-# normalization, pointwise gaussian
+
+# Normalization, pointwise gaussian
 class UnitGaussianNormalizer(object):
     def __init__(self, x, eps=0.00001):
         super(UnitGaussianNormalizer, self).__init__()
@@ -113,7 +130,8 @@ class UnitGaussianNormalizer(object):
         self.mean = self.mean.cpu()
         self.std = self.std.cpu()
 
-# normalization, Gaussian
+
+# Normalization, Gaussian
 class GaussianNormalizer(object):
     def __init__(self, x, eps=0.00001):
         super(GaussianNormalizer, self).__init__()
@@ -139,7 +157,7 @@ class GaussianNormalizer(object):
         self.std = self.std.cpu()
 
 
-# normalization, scaling by range
+# Normalization, scaling by range
 class RangeNormalizer(object):
     def __init__(self, x, low=0.0, high=1.0):
         super(RangeNormalizer, self).__init__()
@@ -163,7 +181,8 @@ class RangeNormalizer(object):
         x = x.view(s)
         return x
 
-#loss function with rel/abs Lp loss
+
+# Loss function with rel/abs Lp loss
 class LpLoss(object):
     def __init__(self, d=2, p=2, size_average=True, reduction=True):
         super(LpLoss, self).__init__()
@@ -209,6 +228,7 @@ class LpLoss(object):
     def __call__(self, x, y):
         return self.rel(x, y)
 
+
 # A simple feedforward neural network
 class DenseNet(torch.nn.Module):
     def __init__(self, layers, nonlinearity, out_nonlinearity=None, normalize=False):
@@ -237,6 +257,7 @@ class DenseNet(torch.nn.Module):
             x = l(x)
 
         return x
+
 
 def pdist(sample_1, sample_2, norm=2, eps=1e-5):
     r"""Compute the matrix of all squared pairwise distances.
@@ -269,6 +290,7 @@ def pdist(sample_1, sample_2, norm=2, eps=1e-5):
         differences = torch.abs(expanded_1 - expanded_2) ** norm
         inner = torch.sum(differences, dim=2, keepdim=False)
         return (eps + inner) ** (1. / norm)
+
 
 class MMDStatistic:
     r"""The *unbiased* MMD test of :cite:`gretton2012kernel`.
@@ -339,7 +361,8 @@ class MMDStatistic:
         else:
             return mmd
 
-# print the number of parameters
+
+# Print the number of parameters
 def count_params(model):
     c = 0
     for p in list(model.parameters()):
