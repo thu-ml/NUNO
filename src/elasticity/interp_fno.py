@@ -7,15 +7,9 @@ reminder: slightly modified, e.g., file path, better output format, etc.
 """
 
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
 from timeit import default_timer
-from util.utilities3 import *
+from util.utilities import *
 from torch.optim import Adam
-
-torch.manual_seed(0)
-np.random.seed(0)
-torch.cuda.manual_seed(0)
-torch.backends.cudnn.deterministic = True
 
 
 ################################################################
@@ -140,62 +134,46 @@ class FNO2d(nn.Module):
         return torch.cat((gridx, gridy), dim=-1).to(device)
 
 
-if __name__ == "__main__":
-    ################################################################
-    # configs
-    ################################################################
-    PATH = 'data/elasticity/'
-    INPUT_PATH = PATH+'Random_UnitCell_mask_10_interp.npy'
-    OUTPUT_PATH = PATH+'Random_UnitCell_sigma_10_interp.npy'
-    Ntotal = 2000
-    ntrain = 1000
-    ntest = 200
+################################################################
+# configs
+################################################################
+PATH = 'data/elasticity/'
+INPUT_PATH = PATH+'Random_UnitCell_mask_10_interp.npy'
+PATH_Sigma = PATH+'Random_UnitCell_sigma_10.npy'
+PATH_XY = PATH+'Random_UnitCell_XY_10.npy'
+Ntotal = 2000
+ntrain = 1000
+ntest = 200
 
-    batch_size = 20
-    learning_rate = 0.001
+batch_size = 20
+learning_rate = 0.001
 
-    epochs = 501
-    step_size = 100
-    gamma = 0.5
+epochs = 501
+step_size = 100
+gamma = 0.5
 
-    modes = 12
-    width = 32
+modes = 12
+width = 32
 
-    r = 1
-    h = int(((41 - 1) / r) + 1)
-    s = h
+r = 1
+h = int(((41 - 1) / r) + 1)
+s = h
 
-    ################################################################
-    # load data and data normalization
-    ################################################################
-    input = np.load(INPUT_PATH)
-    input = torch.tensor(input, dtype=torch.float).permute(2,0,1)
-    output = np.load(OUTPUT_PATH)
-    output = torch.tensor(output, dtype=torch.float).permute(2,0,1)
-
-    x_train = input[:Ntotal][:ntrain, ::r, ::r][:, :s, :s]
-    y_train = output[:Ntotal][:ntrain, ::r, ::r][:, :s, :s]
-
-    x_test = input[:Ntotal][-ntest:, ::r, ::r][:, :s, :s]
-    y_test = output[:Ntotal][-ntest:, ::r, ::r][:, :s, :s]
-
-    x_train = x_train.reshape(ntrain, s, s, 1)
-    x_test = x_test.reshape(ntest, s, s, 1)
-
+################################################################
+# training and evaluation
+################################################################
+def main(x_train, x_test, train_s, test_s, train_xy, test_xy):
     train_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(x_train, y_train), 
+        torch.utils.data.TensorDataset(x_train, train_xy, train_s), 
         batch_size=batch_size, shuffle=True,
         generator=torch.Generator(device=device)
     )
     test_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(x_test, y_test), 
+        torch.utils.data.TensorDataset(x_test, test_xy, test_s), 
         batch_size=batch_size, shuffle=False,
         generator=torch.Generator(device=device)
     )
 
-    ################################################################
-    # training and evaluation
-    ################################################################
     model = FNO2d(modes, modes, width).cuda()
     print(count_params(model))
 
@@ -208,15 +186,27 @@ if __name__ == "__main__":
         model.train()
         t1 = default_timer()
         train_l2 = 0
-        for x, y in train_loader:
-            x, y = x.cuda(), y.cuda()
+        for x, xy, sigma in train_loader:
+            x = x.cuda()
             mask = x.clone()
 
             optimizer.zero_grad()
             out = model(x)
             out = out*mask
 
-            loss = myloss(out.view(batch_size, -1), y.view(batch_size, -1))
+            # Interpolation (from grids to point cloud)
+            # Normalize to [-1, 1]
+            _min, _max = torch.min(xy, dim=1, keepdim=True)[0], torch.max(xy, dim=1, keepdim=True)[0]
+            xy = (xy - _min) / (_max - _min) * 2 - 1
+            xy = xy.unsqueeze(-2)
+                # Output shape: (batch, n_points, 1, 2)
+            u = F.grid_sample(input=out.permute(0, 3, 2, 1), grid=xy, 
+                padding_mode='border', align_corners=False)
+                # Output shape: (batch, 1, n_points, 1)
+            u = u.squeeze(-1).permute(0, 2, 1)
+                # Output shape: (batch, n_points, 1)
+
+            loss = myloss(u.reshape(batch_size, -1), sigma.view(batch_size, -1))
             loss.backward()
 
             optimizer.step()
@@ -227,14 +217,26 @@ if __name__ == "__main__":
         model.eval()
         test_l2 = 0.0
         with torch.no_grad():
-            for x, y in test_loader:
-                x, y = x.cuda(), y.cuda()
+            for x, xy, sigma in test_loader:
+                x = x.cuda()
                 mask = x.clone()
 
                 out = model(x)
                 out2 = out * mask
 
-                test_l2 += myloss(out2.view(batch_size, -1), y.view(batch_size, -1)).item()
+                # Interpolation (from grids to point cloud)
+                # Normalize to [-1, 1]
+                _min, _max = torch.min(xy, dim=1, keepdim=True)[0], torch.max(xy, dim=1, keepdim=True)[0]
+                xy = (xy - _min) / (_max - _min) * 2 - 1
+                xy = xy.unsqueeze(-2)
+                    # Output shape: (batch, n_points, 1, 2)
+                u = F.grid_sample(input=out2.permute(0, 3, 2, 1), grid=xy, 
+                    padding_mode='border', align_corners=False)
+                    # Output shape: (batch, 1, n_points, 1)
+                u = u.squeeze(-1).permute(0, 2, 1)
+                    # Output shape: (batch, n_points, 1)
+
+                test_l2 += myloss(u.reshape(batch_size, -1), sigma.view(batch_size, -1)).item()
 
         train_l2 /= ntrain
         test_l2 /= ntest
@@ -242,3 +244,47 @@ if __name__ == "__main__":
         t2 = default_timer()
         print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
                 .format(ep, t2-t1, train_l2, test_l2))
+
+    # Return final results
+    return train_l2, test_l2
+
+if __name__ == "__main__":
+
+    ################################################################
+    # load data and data normalization
+    ################################################################
+    input = np.load(INPUT_PATH)
+    input = torch.tensor(input, dtype=torch.float).permute(2,0,1)
+    input_s = np.load(PATH_Sigma)
+    input_s = torch.tensor(input_s, dtype=torch.float).permute(1,0).unsqueeze(-1)
+    input_xy = np.load(PATH_XY)
+    input_xy = torch.tensor(input_xy, dtype=torch.float).permute(2,0,1)
+
+    x_train = input[:Ntotal][:ntrain, ::r, ::r][:, :s, :s]
+    x_test = input[:Ntotal][-ntest:, ::r, ::r][:, :s, :s]
+
+    x_train = x_train.reshape(ntrain, s, s, 1)
+    x_test = x_test.reshape(ntest, s, s, 1)
+
+    train_s = input_s[:ntrain]
+    test_s = input_s[-ntest:]
+    train_xy = input_xy[:ntrain]
+    test_xy = input_xy[-ntest:]
+
+
+    ################################################################
+    # re-experiment with different random seeds
+    ################################################################
+    train_l2_res = []
+    test_l2_res = [] 
+    for i in range(5):
+        print("=== Round %d ==="%(i+1))
+        set_random_seed(SEED_LIST[i])
+        train_l2, test_l2 = main(x_train, x_test, 
+            train_s, test_s, train_xy, test_xy)
+        train_l2_res.append(train_l2)
+        test_l2_res.append(test_l2)
+    print("=== Finish ===")
+    for i in range(5):
+        print("[Round {}] Train_L2: {:>4e} Test_L2: {:>4e}"
+                .format(i+1, train_l2_res[i], test_l2_res[i]))
