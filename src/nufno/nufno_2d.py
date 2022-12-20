@@ -38,10 +38,10 @@ class FourierLayer(nn.Module):
     The Fourier layer contains a spectral convolution layer, 
     and a spatial linear transform.
     Note: compared with original implementation of FNO, we
-    add a BatchNorm and a Dropout layer.
+    add a Dropout layer.
     '''
     def __init__(self, in_channels, out_channels, modes1, modes2, 
-        width1=32, width2=32, dropout_rate=0.1, activation=True, batch_norm=True, 
+        width1=32, width2=32, dropout=False, dropout_rate=0.1, activation=True, 
         transform=True, merging=False, merge_channels=None, merge_1d=False):
         '''
         `transform`: bool, optional
@@ -59,12 +59,10 @@ class FourierLayer(nn.Module):
         The default is `False` which means they are 2d images.
         '''
         super(FourierLayer, self).__init__()
+        self.dropout = dropout
         self.activation = activation
-        self.batch_norm = batch_norm
         self.transform = transform
         self.merging = merging
-        if batch_norm:
-            self.norm = nn.BatchNorm2d(in_channels, eps=1e-6)
         self.conv = SpectralConv2d(in_channels, out_channels, 
             modes1, modes2, width1, width2)
         if transform:
@@ -78,7 +76,8 @@ class FourierLayer(nn.Module):
                 self.b = nn.Conv2d(
                     merge_channels if merge_channels is not None 
                     else in_channels, out_channels, 1)
-        self.dropout = nn.Dropout(dropout_rate)
+        if dropout:
+            self.d = nn.Dropout(dropout_rate)
 
     def forward(self, x, external_input=None, x_in=None, x_out=None):
         '''
@@ -87,9 +86,6 @@ class FourierLayer(nn.Module):
         Note: please make sure `merging==True` if `external_input` is
         specified.
         '''
-        if self.batch_norm:
-            # x = self.norm(x)
-            pass
         y = self.conv(x, x_in=x_in, x_out=x_out)
         if self.transform:
             y = y + self.w(x)
@@ -97,7 +93,8 @@ class FourierLayer(nn.Module):
             y = y + self.b(external_input)
         if self.activation:
             y = F.gelu(y)
-        # y = self.dropout(y)
+        if self.dropout:
+            y = self.d(y)
         return y
 
 
@@ -158,12 +155,11 @@ class NUFNO2d(nn.Module):
         # Main branch
         # Conventional Fourier layers, extract global features
         self.layer0 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2, 
-            self.width1, self.width2, batch_norm=False, transform=False, merging=True, 
-            merge_channels=sd_n_channels)
+            self.width1, self.width2, transform=False, merging=True, merge_channels=sd_n_channels)
         self.layer1 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2, 
             merging=True, merge_channels=sd_n_channels)
         self.layer2 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2, 
-            merging=True, merge_channels=sd_n_channels)
+            dropout=True, merging=True, merge_channels=sd_n_channels)
         self.layer3 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2)
         self.layer4 = FourierLayer(self.n_channels, self.n_channels, self.modes1, self.modes2, 
             activation=False, transform=False, merging=True, merge_channels=2, merge_1d=True)
