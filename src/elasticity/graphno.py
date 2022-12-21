@@ -81,8 +81,10 @@ node_features = 2
 # training and evaluation
 ################################################################
 def main(data_train, data_test):
-    train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(data_test, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(data_train, batch_size=batch_size, 
+        shuffle=True, generator=torch.Generator(device=device))
+    test_loader = DataLoader(data_test, batch_size=batch_size, 
+        shuffle=False, generator=torch.Generator(device=device))
     # test_loader2 = DataLoader(data_test, batch_size=1, shuffle=False)
 
     model = KernelNN3(width, ker_width,depth,edge_features,in_width=node_features).cuda()
@@ -125,9 +127,8 @@ def main(data_train, data_test):
         ttrain[ep] = train_l2/ntrain
         ttest[ep] = test_l2/ntest
 
-        print("[Epoch {}] Time: {:.1f}s L2: {:>4e} MSE: {:>4e} Test_L2: {:>4e}"
-                .format(ep, t2-t1, train_l2/ntrain, 
-                train_mse/len(train_loader), test_l2/ntest))
+        print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
+                .format(ep, t2-t1, train_l2/ntrain, test_l2/ntest))
     
     # Return final results
     return ttrain[-1], ttest[-1]
@@ -162,7 +163,7 @@ if __name__ == "__main__":
         return torch.tensor(edge_index, dtype=torch.long), edge_attr
 
     def get_graph_gaussian(mesh, sigma=0.1):
-        pwd = sklearn.metrics.pairwise_distances(mesh, mesh)  # (mesh_n, grid_n)
+        pwd = sklearn.metrics.pairwise_distances(mesh.cpu(), mesh.cpu())  # (mesh_n, grid_n)
         rbf = np.exp(-pwd ** 2 / sigma ** 2)
         sample = np.random.binomial(1, rbf)
         edge_index = np.vstack(np.where(sample))
