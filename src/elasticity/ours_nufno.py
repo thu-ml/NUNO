@@ -7,15 +7,6 @@ from .kdtree import KDTree
 from sklearn.neighbors import KernelDensity
 
 
-# Specify a random seed
-# Note: reproducibility is not strictly guaranteed across different hardwares.
-# We refer to https://pytorch.org/docs/stable/notes/randomness.html
-torch.manual_seed(2021)
-np.random.seed(2021)
-torch.cuda.manual_seed(2021)
-torch.backends.cudnn.deterministic = True
-
-
 ################################################################
 # Configs
 ################################################################
@@ -62,169 +53,194 @@ N1, N2 = modes1 * 2, modes2 * 2
 # L1 >= N1, L2 >= N2
 L1, L2 = modes1 * 2, modes2 * 2
 
-################################################################
-# Data loading and preprocessing (via KD-Tree)
-################################################################
-# Wether to save or load preprocessing results
-SAVE_PREP = False
-LOAD_PREP = True
 
-# Load data
-input_sigma = np.load(PATH_SIGMA)
-input_sigma = np.transpose(input_sigma, (1, 0))
-sigma_mean = np.mean(input_sigma[:ntrain, :])
-sigma_std = np.std(input_sigma[:ntrain, :])
-input_xy = np.load(PATH_XY)
-input_xy = np.transpose(input_xy, (2, 0, 1))
-input_xy = np.concatenate(
-    (input_xy[:ntrain], input_xy[-ntest:]), 
-    axis=0
-)
+def main(train_xy, train_sigma, train_sd_info, train_dmode_sd,
+    test_xy, test_sigma, test_sd_info, test_dmode_sd):
+    ################################################################
+    # Training and evaluation
+    ################################################################
+    train_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(
+            train_xy, train_sigma, 
+            train_sd_info, train_dmode_sd
+        ), 
+        batch_size=batch_size, shuffle=True,
+        generator=torch.Generator(device=device)
+    )
+    test_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(
+            test_xy, test_sigma,
+            test_sd_info, test_dmode_sd
+        ), 
+        batch_size=batch_size, shuffle=False,
+        generator=torch.Generator(device=device)
+    )
+    
+    model = NUFNO2d(modes1=modes1, modes2=modes2, width1=width1, width2=width2, 
+        n_channels=n_channels, n_subdomains=n_subdomains)
+    print("Model size: %d"%count_params(model))
 
-if LOAD_PREP:
-    input_sd_info = np.load(PATH_SD_INFO)
-    input_dmode_sd = np.load(PATH_DMODE_SD)
-else:
-    print("Start KD-Tree splitting...")
-    input_sd_info = []
-    t1 = default_timer()
-    for i in tqdm(range(len(input_xy)), leave=False):
-        point_cloud = input_xy[i].tolist()  # N_points x 2
-        # Use kd-tree to generate subdomain dividing
-        tree= KDTree(
-            point_cloud, dim=2, n_subdomains=n_subdomains, 
-            n_blocks=8, overall_borders=[(0, 1), (0, 1)]
-        )
-        tree.solve()
-        # Gather subdomain info:
-        # (xmin, ymin, xlen, ylen)
-        borders = tree.get_subdomain_borders(shrink=True)
-        info = []
-        for j in range(n_subdomains):
-            border = borders[j]
-            # Subdomain info: (xmin, ymin, xlen, ylen)
-            info.append((border[0][0], border[1][0], 
-                border[0][1] - border[0][0], border[1][1] - border[1][0]))
-        input_sd_info.append(info)
-    t2 = default_timer()
-    input_sd_info = np.array(input_sd_info)
-    print("Finish KD-Tree splitting, time elapsed: {:.1f}s".format(t2-t1))
+    params = list(model.parameters())
+    optimizer = Adam(params, lr=learning_rate, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, patience=patience, factor=factor
+    )
 
-    # Estimate the density distribution (probability) of the point cloud, 
-    # which serves as the input of the neural operator.
-    # Then compute the Fourier modes of the density function
-    print("Start estimating the density distribution of point clouds...")
-    # Since the result of real FFT is Hermitian,
-    # we can simply store half of it
-    input_dmode_sd = []
-    t1 = default_timer()
-    for i in tqdm(range(len(input_xy)), leave=False):
-        kde = KernelDensity(kernel='gaussian', bandwidth=bandwidth).fit(input_xy[i])
-        input_dmode_sd.append([])
-        # Evaluate on each subdomain (uniform grid)
-        for j in range(n_subdomains):
-            xmin, ymin, xlen, ylen = input_sd_info[i, j, :4]
-            # Generate the uniform grid (oversampling)
-            L1_sd = max(int(np.round(ylen * L1 * oversamp_r1)), 2)
-            L2_sd = max(int(np.round(xlen * L2 * oversamp_r2)), 2)
-            N1_sd = int(np.round(N1 * oversamp_r1))
-            N2_sd = int(np.round(N2 * oversamp_r2))
-            grid_x = np.linspace(xmin, xmin + xlen, num=L2_sd)
-            grid_y = np.linspace(ymin, ymin + ylen, num=L1_sd)
-            grid_x, grid_y = np.meshgrid(grid_x, grid_y)
-            # Grid size: grid_size_y x grid_size_x x 2
-            # Note: the indexing mode is 'xy' (see np.meshgrid docs for more info)
-            grid = np.stack((grid_x, grid_y), axis=-1)
-            positions = grid.reshape(-1, 2)
-            # Evaluation of KernelDensity
-            density_prob = np.exp(kde.score_samples(positions)).reshape(grid.shape[0], grid.shape[1])
-            modes = np.fft.rfft2(density_prob, s=(N1_sd, N2_sd))
-            modes = np.concatenate((modes[:modes1, :modes2], modes[-modes1:, :modes2]), axis=0)
-            # Only the frequency modes of them are fed into the model
-            input_dmode_sd[i].append(
-                modes / (oversamp_r1 * oversamp_r2)
-            )
-    t2 = default_timer()
-    input_dmode_sd = np.array(input_dmode_sd)
-    print("Finish estimating the density distribution of point clouds, time elapsed: {:.1f}s".format(t2-t1))
-
-    if SAVE_PREP:
-        np.save(PATH_SD_INFO, input_sd_info)
-        np.save(PATH_DMODE_SD, input_dmode_sd)
-
-################################################################
-# Preparing the dataset
-################################################################
-input_xy = torch.tensor(input_xy, dtype=torch.float)
-input_sigma = torch.tensor(input_sigma, dtype=torch.float).unsqueeze(-1)
-input_sd_info = torch.tensor(input_sd_info, dtype=torch.float)
-input_dmode_sd = torch.tensor(input_dmode_sd, dtype=torch.cfloat).unsqueeze(-1)
-
-train_xy = input_xy[:ntrain]
-test_xy = input_xy[-ntest:]
-train_sigma = input_sigma[:ntrain]
-test_sigma = input_sigma[-ntest:]
-train_sd_info = input_sd_info[:ntrain]
-test_sd_info = input_sd_info[-ntest:]
-train_dmode_sd = input_dmode_sd[:ntrain]
-test_dmode_sd = input_dmode_sd[-ntest:]
-
-train_loader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(
-        train_xy, train_sigma, 
-        train_sd_info, train_dmode_sd
-    ), 
-    batch_size=batch_size, shuffle=True,
-    generator=torch.Generator(device=device)
-)
-test_loader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(
-        test_xy, test_sigma,
-        test_sd_info, test_dmode_sd
-    ), 
-    batch_size=batch_size, shuffle=False,
-    generator=torch.Generator(device=device)
-)
-
-################################################################
-# Training and evaluation
-################################################################
-model = NUFNO2d(modes1=modes1, modes2=modes2, width1=width1, width2=width2, 
-    n_channels=n_channels, n_subdomains=n_subdomains)
-print("Model size: %d"%count_params(model))
-
-params = list(model.parameters())
-optimizer = Adam(params, lr=learning_rate, weight_decay=weight_decay)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, patience=patience, factor=factor
-)
-
-myloss = LpLoss(size_average=False)
-for ep in range(epochs):
-    model.train()
-    t1 = default_timer()
-    train_l2 = 0.0
-    for xy, sigma, sd_info, dmode_sd in train_loader:
-        optimizer.zero_grad()
-        out = model(dmode_sd, sd_info, xy) * sigma_std + sigma_mean
-
-        loss = myloss(out.view(batch_size, -1), sigma.view(batch_size, -1))
-        loss.backward()
-        optimizer.step()
-        train_l2 += loss.item()
-
-    scheduler.step(train_l2)
-
-    model.eval()
-    test_l2 = 0.0
-    with torch.no_grad():
-        for xy, sigma, sd_info, dmode_sd in test_loader:
+    myloss = LpLoss(size_average=False)
+    for ep in range(epochs):
+        model.train()
+        t1 = default_timer()
+        train_l2 = 0.0
+        for xy, sigma, sd_info, dmode_sd in train_loader:
+            optimizer.zero_grad()
             out = model(dmode_sd, sd_info, xy) * sigma_std + sigma_mean
-            test_l2 += myloss(out.view(batch_size, -1), sigma.view(batch_size, -1)).item()
 
-    train_l2 /= ntrain
-    test_l2 /= ntest
+            loss = myloss(out.view(batch_size, -1), sigma.view(batch_size, -1))
+            loss.backward()
+            optimizer.step()
+            train_l2 += loss.item()
 
-    t2 = default_timer()
-    print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
-            .format(ep, t2-t1, train_l2, test_l2))
+        scheduler.step(train_l2)
+
+        model.eval()
+        test_l2 = 0.0
+        with torch.no_grad():
+            for xy, sigma, sd_info, dmode_sd in test_loader:
+                out = model(dmode_sd, sd_info, xy) * sigma_std + sigma_mean
+                test_l2 += myloss(out.view(batch_size, -1), sigma.view(batch_size, -1)).item()
+
+        train_l2 /= ntrain
+        test_l2 /= ntest
+
+        t2 = default_timer()
+        print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
+                .format(ep, t2-t1, train_l2, test_l2))
+
+    # Return final results
+    return train_l2, test_l2
+
+
+if __name__ == "__main__":
+    ################################################################
+    # Data loading and preprocessing (via KD-Tree)
+    ################################################################
+    # Wether to save or load preprocessing results
+    SAVE_PREP = False
+    LOAD_PREP = True
+
+    # Load data
+    input_sigma = np.load(PATH_SIGMA)
+    input_sigma = np.transpose(input_sigma, (1, 0))
+    sigma_mean = np.mean(input_sigma[:ntrain, :])
+    sigma_std = np.std(input_sigma[:ntrain, :])
+    input_xy = np.load(PATH_XY)
+    input_xy = np.transpose(input_xy, (2, 0, 1))
+    input_xy = np.concatenate(
+        (input_xy[:ntrain], input_xy[-ntest:]), 
+        axis=0
+    )
+
+    if LOAD_PREP:
+        input_sd_info = np.load(PATH_SD_INFO)
+        input_dmode_sd = np.load(PATH_DMODE_SD)
+    else:
+        print("Start KD-Tree splitting...")
+        input_sd_info = []
+        t1 = default_timer()
+        for i in tqdm(range(len(input_xy)), leave=False):
+            point_cloud = input_xy[i].tolist()  # N_points x 2
+            # Use kd-tree to generate subdomain dividing
+            tree= KDTree(
+                point_cloud, dim=2, n_subdomains=n_subdomains, 
+                n_blocks=8, overall_borders=[(0, 1), (0, 1)]
+            )
+            tree.solve()
+            # Gather subdomain info:
+            # (xmin, ymin, xlen, ylen)
+            borders = tree.get_subdomain_borders(shrink=True)
+            info = []
+            for j in range(n_subdomains):
+                border = borders[j]
+                # Subdomain info: (xmin, ymin, xlen, ylen)
+                info.append((border[0][0], border[1][0], 
+                    border[0][1] - border[0][0], border[1][1] - border[1][0]))
+            input_sd_info.append(info)
+        t2 = default_timer()
+        input_sd_info = np.array(input_sd_info)
+        print("Finish KD-Tree splitting, time elapsed: {:.1f}s".format(t2-t1))
+
+        # Estimate the density distribution (probability) of the point cloud, 
+        # which serves as the input of the neural operator.
+        # Then compute the Fourier modes of the density function
+        print("Start estimating the density distribution of point clouds...")
+        # Since the result of real FFT is Hermitian,
+        # we can simply store half of it
+        input_dmode_sd = []
+        t1 = default_timer()
+        for i in tqdm(range(len(input_xy)), leave=False):
+            kde = KernelDensity(kernel='gaussian', bandwidth=bandwidth).fit(input_xy[i])
+            input_dmode_sd.append([])
+            # Evaluate on each subdomain (uniform grid)
+            for j in range(n_subdomains):
+                xmin, ymin, xlen, ylen = input_sd_info[i, j, :4]
+                # Generate the uniform grid (oversampling)
+                L1_sd = max(int(np.round(ylen * L1 * oversamp_r1)), 2)
+                L2_sd = max(int(np.round(xlen * L2 * oversamp_r2)), 2)
+                N1_sd = int(np.round(N1 * oversamp_r1))
+                N2_sd = int(np.round(N2 * oversamp_r2))
+                grid_x = np.linspace(xmin, xmin + xlen, num=L2_sd)
+                grid_y = np.linspace(ymin, ymin + ylen, num=L1_sd)
+                grid_x, grid_y = np.meshgrid(grid_x, grid_y)
+                # Grid size: grid_size_y x grid_size_x x 2
+                # Note: the indexing mode is 'xy' (see np.meshgrid docs for more info)
+                grid = np.stack((grid_x, grid_y), axis=-1)
+                positions = grid.reshape(-1, 2)
+                # Evaluation of KernelDensity
+                density_prob = np.exp(kde.score_samples(positions)).reshape(grid.shape[0], grid.shape[1])
+                modes = np.fft.rfft2(density_prob, s=(N1_sd, N2_sd))
+                modes = np.concatenate((modes[:modes1, :modes2], modes[-modes1:, :modes2]), axis=0)
+                # Only the frequency modes of them are fed into the model
+                input_dmode_sd[i].append(
+                    modes / (oversamp_r1 * oversamp_r2)
+                )
+        t2 = default_timer()
+        input_dmode_sd = np.array(input_dmode_sd)
+        print("Finish estimating the density distribution of point clouds, time elapsed: {:.1f}s".format(t2-t1))
+
+        if SAVE_PREP:
+            np.save(PATH_SD_INFO, input_sd_info)
+            np.save(PATH_DMODE_SD, input_dmode_sd)
+
+    ################################################################
+    # Preparing the dataset
+    ################################################################
+    input_xy = torch.tensor(input_xy, dtype=torch.float)
+    input_sigma = torch.tensor(input_sigma, dtype=torch.float).unsqueeze(-1)
+    input_sd_info = torch.tensor(input_sd_info, dtype=torch.float)
+    input_dmode_sd = torch.tensor(input_dmode_sd, dtype=torch.cfloat).unsqueeze(-1)
+
+    train_xy = input_xy[:ntrain]
+    test_xy = input_xy[-ntest:]
+    train_sigma = input_sigma[:ntrain]
+    test_sigma = input_sigma[-ntest:]
+    train_sd_info = input_sd_info[:ntrain]
+    test_sd_info = input_sd_info[-ntest:]
+    train_dmode_sd = input_dmode_sd[:ntrain]
+    test_dmode_sd = input_dmode_sd[-ntest:]
+
+    ################################################################
+    # Re-experiment with different random seeds
+    ################################################################
+    train_l2_res = []
+    test_l2_res = [] 
+    for i in range(5):
+        print("=== Round %d ==="%(i+1))
+        set_random_seed(SEED_LIST[i])
+        train_l2, test_l2 = main(train_xy, train_sigma, train_sd_info, train_dmode_sd,
+            test_xy, test_sigma, test_sd_info, test_dmode_sd)
+        train_l2_res.append(train_l2)
+        test_l2_res.append(test_l2)
+    print("=== Finish ===")
+    for i in range(5):
+        print("[Round {}] Train_L2: {:>4e} Test_L2: {:>4e}"
+                .format(i+1, train_l2_res[i], test_l2_res[i]))
