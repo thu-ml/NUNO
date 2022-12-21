@@ -96,6 +96,7 @@ def main(data_train, data_test):
     ttrain = np.zeros((epochs, ))
     ttest = np.zeros((epochs,))
     model.train()
+    t0 = default_timer()
     for ep in range(epochs):
         t1 = default_timer()
         train_mse = 0.0
@@ -131,7 +132,7 @@ def main(data_train, data_test):
                 .format(ep, t2-t1, train_l2/ntrain, test_l2/ntest))
     
     # Return final results
-    return ttrain[-1], ttest[-1]
+    return ttrain[-1], ttest[-1], t2-t0
 
 
 
@@ -189,14 +190,16 @@ if __name__ == "__main__":
     # re-experiment with different random seeds
     ################################################################
     train_l2_res = []
-    test_l2_res = [] 
+    test_l2_res = []
+    time_res = []
     for i in range(5):
         print("=== Round %d ==="%(i+1))
         set_random_seed(SEED_LIST[i])
-        train_l2, test_l2 = main(data_train, data_test)
+        train_l2, test_l2, time = main(data_train, data_test)
         train_l2_res.append(train_l2)
         test_l2_res.append(test_l2)
+        time_res.append(time)
     print("=== Finish ===")
     for i in range(5):
-        print("[Round {}] Train_L2: {:>4e} Test_L2: {:>4e}"
-                .format(i+1, train_l2_res[i], test_l2_res[i]))
+        print("[Round {}] Time: {:.1f}s Train_L2: {:>4e} Test_L2: {:>4e}"
+                .format(i+1, time_res[i], train_l2_res[i], test_l2_res[i]))

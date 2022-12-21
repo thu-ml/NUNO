@@ -348,6 +348,7 @@ def main(train_rr, train_s, train_xy, test_rr, test_s, test_xy):
 
     myloss = LpLoss(size_average=False)
     N_sample = 1000
+    t0 = default_timer()
     for ep in range(epochs):
         model.train()
         t1 = default_timer()
@@ -390,7 +391,7 @@ def main(train_rr, train_s, train_xy, test_rr, test_s, test_xy):
                 .format(ep, t2-t1, train_l2, train_reg, test_l2))
 
     # Return final results
-    return train_l2, test_l2
+    return train_l2, test_l2, t2-t0
 
 
 
@@ -424,15 +425,17 @@ if __name__ == "__main__":
     # re-experiment with different random seeds
     ################################################################
     train_l2_res = []
-    test_l2_res = [] 
+    test_l2_res = []
+    time_res = []
     for i in range(5):
         print("=== Round %d ==="%(i+1))
         set_random_seed(SEED_LIST[i])
-        train_l2, test_l2 = main(train_rr, train_s, train_xy, 
+        train_l2, test_l2, time = main(train_rr, train_s, train_xy, 
             test_rr, test_s, test_xy)
         train_l2_res.append(train_l2)
         test_l2_res.append(test_l2)
+        time_res.append(time)
     print("=== Finish ===")
     for i in range(5):
-        print("[Round {}] Train_L2: {:>4e} Test_L2: {:>4e}"
-                .format(i+1, train_l2_res[i], test_l2_res[i]))
+        print("[Round {}] Time: {:.1f}s Train_L2: {:>4e} Test_L2: {:>4e}"
+                .format(i+1, time_res[i], train_l2_res[i], test_l2_res[i]))
