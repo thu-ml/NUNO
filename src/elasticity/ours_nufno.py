@@ -28,8 +28,8 @@ learning_rate = 0.001
 weight_decay = 1e-4
 epochs = 501
 # LR scheduler
-patience = 30
-factor = 0.1
+step_size = 400
+gamma = 0.1
 
 # Network params
 # modes1 <= width1 // 2 + 1
@@ -82,11 +82,10 @@ def main(train_xy, train_sigma, train_sd_info, train_dmode_sd,
 
     params = list(model.parameters())
     optimizer = Adam(params, lr=learning_rate, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=patience, factor=factor
-    )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
     myloss = LpLoss(size_average=False)
+    t0 = default_timer()
     for ep in range(epochs):
         model.train()
         t1 = default_timer()
@@ -100,7 +99,7 @@ def main(train_xy, train_sigma, train_sd_info, train_dmode_sd,
             optimizer.step()
             train_l2 += loss.item()
 
-        scheduler.step(train_l2)
+        scheduler.step()
 
         model.eval()
         test_l2 = 0.0
@@ -117,7 +116,7 @@ def main(train_xy, train_sigma, train_sd_info, train_dmode_sd,
                 .format(ep, t2-t1, train_l2, test_l2))
 
     # Return final results
-    return train_l2, test_l2
+    return train_l2, test_l2, t2-t0
 
 
 if __name__ == "__main__":
@@ -232,15 +231,17 @@ if __name__ == "__main__":
     # Re-experiment with different random seeds
     ################################################################
     train_l2_res = []
-    test_l2_res = [] 
+    test_l2_res = []
+    time_res = []
     for i in range(5):
         print("=== Round %d ==="%(i+1))
         set_random_seed(SEED_LIST[i])
-        train_l2, test_l2 = main(train_xy, train_sigma, train_sd_info, train_dmode_sd,
+        train_l2, test_l2, time = main(train_xy, train_sigma, train_sd_info, train_dmode_sd,
             test_xy, test_sigma, test_sd_info, test_dmode_sd)
         train_l2_res.append(train_l2)
         test_l2_res.append(test_l2)
+        time_res.append(time)
     print("=== Finish ===")
     for i in range(5):
-        print("[Round {}] Train_L2: {:>4e} Test_L2: {:>4e}"
-                .format(i+1, train_l2_res[i], test_l2_res[i]))
+        print("[Round {}] Time: {:.1f}s Train_L2: {:>4e} Test_L2: {:>4e}"
+                .format(i+1, time_res[i], train_l2_res[i], test_l2_res[i]))

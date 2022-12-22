@@ -9,7 +9,7 @@ reminder: slightly modified, e.g., file path, better output format, etc.
 import torch
 import numpy as np
 from util.util_deeponet import *
-from util.utilities import *
+from util.utilities import set_random_seed, SEED_LIST, device
 from torch.optim import Adam
 from timeit import default_timer
 
@@ -26,6 +26,7 @@ ntrain = 1000
 ntest = 200 
 ndata = ntrain + ntest
 
+batch_size = 16
 learning_rate = 0.001
 epochs = 1000
 step_size = 100
@@ -38,11 +39,6 @@ layers = 5
 # training and evaluation
 ################################################################
 def main(x_train, y_train, x_test, y_test):
-    ################################################################
-    # training and evaluation
-    ################################################################
-
-    batch_size = 16
     train_loader = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(x_train, y_train), 
         batch_size=batch_size, shuffle=True, 
@@ -59,12 +55,14 @@ def main(x_train, y_train, x_test, y_test):
     optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
-    myloss = LpLoss(size_average=False)
+    testloss = LpLoss(size_average=False)
+    myloss = torch.nn.MSELoss(reduction='sum')
     y_normalizer.cuda()
     t0 = default_timer()
     for ep in range(epochs):
         model.train()
         t1 = default_timer()
+        train_mse = 0
         train_l2 = 0
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
@@ -73,13 +71,14 @@ def main(x_train, y_train, x_test, y_test):
             out = model(x)
             out = y_normalizer.decode(out)
             y = y_normalizer.decode(y)
-
             loss = myloss(out , y)
             loss.backward()
 
             optimizer.step()
-            train_l2 += loss.item()
+            train_mse += loss.item()
+            train_l2 += testloss(out.view(batch_size, -1), y.view(batch_size, -1)).item()
         
+        test_mse = 0
         test_l2 = 0
         with torch.no_grad():
             for x, y in test_loader:
@@ -88,17 +87,21 @@ def main(x_train, y_train, x_test, y_test):
                 out = y_normalizer.decode(out)
                 y = y_normalizer.decode(y)
                 loss = myloss(out , y)
-                test_l2 += loss.item()
+                test_mse += loss.item()
+                test_l2 += testloss(out.view(batch_size, -1), y.view(batch_size, -1)).item()
+
 
         # torch.save(model, "DeepONet.model")
         scheduler.step()
 
+        train_mse/= ntrain
+        test_mse/= ntest
         train_l2/= ntrain
-        test_l2/= ntest
+        test_l2/=ntest
 
         t2 = default_timer()
-        print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
-                .format(ep, t2-t1, train_l2, test_l2))
+        print("[Epoch {}] Time: {:.1f}s MSE: {:>4e} Test_MSE: {:>4e}"
+                .format(ep, t2-t1, train_mse, test_mse))
     
     # Return final results
     return train_l2, test_l2, t2-t0
