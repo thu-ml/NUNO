@@ -1,3 +1,10 @@
+"""
+Reference
+----------
+author:   Zongyi Li and Daniel Zhengyu Huang
+source:   https://raw.githubusercontent.com/zongyi-li/Geo-FNO
+"""
+
 import numpy as np
 import torch
 import torch.nn as nn
