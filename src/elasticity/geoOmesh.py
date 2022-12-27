@@ -139,7 +139,8 @@ class FNO2d(nn.Module):
 ################################################################
 INPUT_X = 'data/elasticity/Random_UnitCell_Deform_X_10_interp.npy'
 INPUT_Y = 'data/elasticity/Random_UnitCell_Deform_Y_10_interp.npy'
-OUTPUT_Sigma = 'data/elasticity/Random_UnitCell_Deform_sigma_10_interp.npy'
+INPUT_XY = 'data/elasticity/Random_UnitCell_XY_10.npy'
+OUTPUT_Sigma = 'data/elasticity/Random_UnitCell_sigma_10.npy'
 
 Ntotal = 2000
 ntrain = 1000
@@ -164,13 +165,13 @@ s2 = int(((41 - 1) / r2) + 1)
 ################################################################
 # training and evaluation
 ################################################################
-def main(x_train, y_train, x_test, y_test):
+def main(x_train, y_train, xy_train, x_test, y_test, xy_test):
     train_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(x_train, y_train), 
+        torch.utils.data.TensorDataset(x_train, y_train, xy_train), 
         batch_size=batch_size, shuffle=True,
         generator=torch.Generator(device=device))
     test_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(x_test, y_test), 
+        torch.utils.data.TensorDataset(x_test, y_test, xy_test), 
         batch_size=batch_size, shuffle=False,
         generator=torch.Generator(device=device))
 
@@ -185,15 +186,28 @@ def main(x_train, y_train, x_test, y_test):
 
     myloss = LpLoss(size_average=False)
     t0 = default_timer()
+    alpha = 1e3
     for ep in range(epochs):
         model.train()
         t1 = default_timer()
         train_l2 = 0
-        for x, y in train_loader:
+        for x, y, xy in train_loader:
             x, y = x.cuda(), y.cuda()
 
             optimizer.zero_grad()
             out = model(x)
+
+            # RBF Interpolation (from grids to point cloud)
+            x_pos, y_pos = x[..., 0:1], x[..., 1:2]
+            x_pos, y_pos = x_pos.repeat([1, 1, 1, y.shape[-1]]), \
+                y_pos.repeat([1, 1, 1, y.shape[-1]])
+            dist = (xy[..., 0].reshape(-1, 1, 1, y.shape[-1]) - x_pos) ** 2 + \
+                (xy[..., 1].reshape(-1, 1, 1, y.shape[-1]) - y_pos) ** 2
+            dist = dist.reshape(batch_size, -1, y.shape[-1])
+            dist = -dist * alpha
+            dist = torch.softmax(dist, dim=1)
+            out = out.reshape(batch_size, -1)
+            out = torch.einsum("bn,bni->bi", out, dist)
 
             loss = myloss(out.view(batch_size, -1), y.view(batch_size, -1))
             loss.backward()
@@ -206,9 +220,21 @@ def main(x_train, y_train, x_test, y_test):
         model.eval()
         test_l2 = 0.0
         with torch.no_grad():
-            for x, y in test_loader:
+            for x, y, xy in test_loader:
                 x, y = x.cuda(), y.cuda()
                 out = model(x)
+
+                # RBF Interpolation (from grids to point cloud)
+                x_pos, y_pos = x[..., 0:1], x[..., 1:2]
+                x_pos, y_pos = x_pos.repeat([1, 1, 1, y.shape[-1]]), \
+                    y_pos.repeat([1, 1, 1, y.shape[-1]])
+                dist = (xy[..., 0].reshape(-1, 1, 1, y.shape[-1]) - x_pos) ** 2 + \
+                    (xy[..., 1].reshape(-1, 1, 1, y.shape[-1]) - y_pos) ** 2
+                dist = dist.reshape(batch_size, -1, y.shape[-1])
+                dist = -dist * alpha
+                dist = torch.softmax(dist, dim=1)
+                out = out.reshape(batch_size, -1)
+                out = torch.einsum("bn,bni->bi", out, dist)
 
                 test_l2 += myloss(out.view(batch_size, -1), y.view(batch_size, -1)).item()
 
@@ -232,16 +258,22 @@ if __name__ == "__main__":
     inputX = torch.tensor(inputX, dtype=torch.float).permute(2,0,1)
     inputY = np.load(INPUT_Y)
     inputY = torch.tensor(inputY, dtype=torch.float).permute(2,0,1)
+    inputXY = np.load(INPUT_XY)
+    inputXY = torch.tensor(inputXY, dtype=torch.float).permute(2,0,1)
     input = torch.stack([inputX, inputY], dim=-1)
     output = np.load(OUTPUT_Sigma)
-    output = torch.tensor(output, dtype=torch.float).permute(2,0,1)
+    output = torch.tensor(output, dtype=torch.float).permute(1,0)
 
-    x_train = input[:ntrain, ::r1, ::r2][:, :s1, :s2]
-    y_train = output[:ntrain, ::r1, ::r2][:, :s1, :s2]
-    x_test = input[-ntest:, ::r1, ::r2][:, :s1, :s2]
-    y_test = output[-ntest:, ::r1, ::r2][:, :s1, :s2]
-    x_train = x_train.reshape(ntrain, s1, s2, 2)
-    x_test = x_test.reshape(ntest, s1, s2, 2)
+    x_train = input[:ntrain]
+    y_train = output[:ntrain]
+    xy_train = inputXY[:ntrain]
+
+    x_test = input[-ntest:]
+    y_test = output[-ntest:]
+    xy_test = inputXY[-ntest:]
+
+    # x_train = x_train.reshape(ntrain, s1, s2, 2)
+    # x_test = x_test.reshape(ntest, s1, s2, 2)
 
 
     ################################################################
@@ -253,7 +285,7 @@ if __name__ == "__main__":
     for i in range(5):
         print("=== Round %d ==="%(i+1))
         set_random_seed(SEED_LIST[i])
-        train_l2, test_l2, time = main(x_train, y_train, x_test, y_test)
+        train_l2, test_l2, time = main(x_train, y_train, xy_train, x_test, y_test, xy_test)
         train_l2_res.append(train_l2)
         test_l2_res.append(test_l2)
         time_res.append(time)
