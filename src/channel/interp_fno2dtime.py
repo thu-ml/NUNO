@@ -188,25 +188,21 @@ else:
     t1 = default_timer()
     print("Start interpolation...")
     # Interpolation from point cloud to uniform grid
-    input_u_grid = []
-    for i in tqdm(range(input_u.shape[0]), leave=False):
-        point_cloud = input_xy
-        point_cloud_val = input_u[i]
-        interp_linear = LinearNDInterpolator(point_cloud, point_cloud_val)
-        interp_rbf = RBFInterpolator(point_cloud, point_cloud_val, neighbors=6)
-        # Uniform Grid
-        grid_x = np.linspace(np.min(point_cloud[:, 0]), np.max(point_cloud[:, 0]), num=S)
-        grid_y = np.linspace(np.min(point_cloud[:, 1]), np.min(point_cloud[:, 1]), num=S)
-        grid_x, grid_y = np.meshgrid(grid_x, grid_y)
-        grid_val = interp_linear(grid_x, grid_y)
-        # Fill nan values
-        nan_indices = np.isnan(grid_val)[..., 0, 0]
-        fill_vals = interp_rbf(np.stack((grid_x[nan_indices], grid_y[nan_indices]), axis=1))
-        grid_val[nan_indices] = fill_vals
+    point_cloud = input_xy
+    point_cloud_val = np.transpose(input_u, (1, 2, 3, 0)) 
+    interp_linear = LinearNDInterpolator(point_cloud, point_cloud_val)
+    interp_rbf = RBFInterpolator(point_cloud, point_cloud_val, neighbors=6)
+    # Uniform Grid
+    grid_x = np.linspace(np.min(point_cloud[:, 0]), np.max(point_cloud[:, 0]), num=S)
+    grid_y = np.linspace(np.min(point_cloud[:, 1]), np.min(point_cloud[:, 1]), num=S)
+    grid_x, grid_y = np.meshgrid(grid_x, grid_y)
+    grid_val = interp_linear(grid_x, grid_y)
+    # Fill nan values
+    nan_indices = np.isnan(grid_val)[..., 0, 0, 0]
+    fill_vals = interp_rbf(np.stack((grid_x[nan_indices], grid_y[nan_indices]), axis=1))
+    grid_val[nan_indices] = fill_vals
 
-        input_u_grid.append(grid_val)
-
-    input_u_grid = np.array(input_u_grid)
+    input_u_grid = np.transpose(grid_val, (4, 0, 1, 2, 3)) 
     if SAVE_PREP:
         np.save(PATH_U_G, input_u_grid)
     t2 = default_timer()
