@@ -208,11 +208,11 @@ else:
     t2 = default_timer()
     print("Finish interpolation, time elapsed: {:.1f}s".format(t2-t1))
 
-input_xy = torch.from_numpy(input_xy).cuda().float()
+input_xy = torch.from_numpy(input_xy).float()
 input_xy = input_xy.unsqueeze(0).repeat([batch_size, 1, 1])
 
-input_u_grid = torch.from_numpy(input_u_grid).cuda().float()
-input_u = torch.from_numpy(input_u).cuda().float()
+input_u_grid = torch.from_numpy(input_u_grid).float()
+input_u = torch.from_numpy(input_u).float()
 
 train_a = input_u_grid[:ntrain, ..., :T_in, :]
 test_a = input_u_grid[-ntest:, ..., :T_in, :]
