@@ -261,11 +261,11 @@ input_u_sd_grid = torch.from_numpy(
 input_u_sd = torch.from_numpy(input_u_sd).float()
 input_u_sd_mask = torch.from_numpy(input_u_sd_mask).cuda().float()
 
-train_a_sd = input_u_sd_grid[:ntrain, ..., :T_in, :]
-test_a_sd = input_u_sd_grid[-ntest:, ..., :T_in, :]
+train_a_sd = input_u_sd_grid[:ntrain, ..., :T_in, :].cuda()
+test_a_sd = input_u_sd_grid[-ntest:, ..., :T_in, :].cuda()
 
-train_u_sd = input_u_sd[:ntrain, ..., T_in:T, :, :]
-test_u_sd = input_u_sd[-ntest:, ..., T_in:T, :, :]
+train_u_sd = input_u_sd[:ntrain, ..., T_in:T, :, :].cuda()
+test_u_sd = input_u_sd[-ntest:, ..., T_in:T, :, :].cuda()
 
 a_normalizer = UnitGaussianNormalizer(train_a_sd)
 train_a_sd = a_normalizer.encode(train_a_sd)
@@ -299,7 +299,6 @@ for ep in range(epochs):
     t1 = default_timer()
     train_l2 = 0
     for xx, yy in train_loader:
-        xx, yy = xx.cuda(), yy.cuda()
         # Time step marching 
         for t in range(0, T-T_in, step):
             im = model(xx.reshape(batch_size, S, S, -1))
@@ -346,8 +345,6 @@ for ep in range(epochs):
     test_l2 = 0.0
     with torch.no_grad():
         for xx, yy in test_loader:
-            xx, yy = xx.cuda(), yy.cuda()
-
             # Time step marching 
             for t in range(0, T-T_in, step):
                 im = model(xx.reshape(batch_size, S, S, -1))

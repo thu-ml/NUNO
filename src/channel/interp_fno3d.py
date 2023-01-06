@@ -223,11 +223,11 @@ input_xy = input_xy.unsqueeze(0).repeat([batch_size, 1, 1])
 input_u_grid = torch.from_numpy(input_u_grid).float()
 input_u = torch.from_numpy(input_u).float()
 
-train_a = input_u_grid[:ntrain, ..., :T_in, :]
-test_a = input_u_grid[-ntest:, ..., :T_in, :]
+train_a = input_u_grid[:ntrain, ..., :T_in, :].cuda()
+test_a = input_u_grid[-ntest:, ..., :T_in, :].cuda()
 
-train_u = input_u[:ntrain, ..., T_in:T, :]
-test_u = input_u[-ntest:, ..., T_in:T, :]
+train_u = input_u[:ntrain, ..., T_in:T, :].cuda()
+test_u = input_u[-ntest:, ..., T_in:T, :].cuda()
 
 a_normalizer = UnitGaussianNormalizer(train_a)
 train_a = a_normalizer.encode(train_a)
@@ -262,8 +262,6 @@ for ep in range(epochs):
     t1 = default_timer()
     train_l2 = 0
     for x, y in train_loader:
-        x, y = x.cuda(), y.cuda()
-
         optimizer.zero_grad()
         out = model(x).reshape(batch_size, S, S, -1)
             # Output shape: (batch, S, S, (T-T_in) * 3)
@@ -294,8 +292,6 @@ for ep in range(epochs):
     test_l2 = 0.0
     with torch.no_grad():
         for x, y in test_loader:
-            x, y = x.cuda(), y.cuda()
-
             out = model(x).reshape(batch_size, S, S, -1)
                 # Output shape: (batch, S, S, (T-T_in) * 3)
 
