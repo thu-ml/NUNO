@@ -179,6 +179,8 @@ T = 30      # output: [0.15, 0.30)
 step = 1
 
 n_subdomains = 8
+# Oversampling ratio (>=1) for preprocessing interpolation
+oversamp_r1 = oversamp_r2 = 2
 
 # Wether to save or load preprocessing results
 SAVE_PREP = False
@@ -200,7 +202,7 @@ tree= KDTree(
 )
 tree.solve()
 # Gather subdomain info:
-borders_sd = tree.get_subdomain_borders(shrink=True)
+bbox_sd = tree.get_subdomain_bounding_boxes()
 indices_sd = tree.get_subdomain_indices()
 input_xy_sd = np.zeros((np.max([len(indices_sd[i]) for i in range(n_subdomains)]), n_subdomains, 2))
 for i in range(n_subdomains):
@@ -223,16 +225,33 @@ else:
     interp_rbf = RBFInterpolator(point_cloud, point_cloud_val, neighbors=6)
     for i in range(n_subdomains):
         # Uniform Grid
-        grid_x = np.linspace(borders_sd[i][0][0], borders_sd[i][0][1], num=S)
-        grid_y = np.linspace(borders_sd[i][1][0], borders_sd[i][1][1], num=S)
+        n_points = len(indices_sd[i])
+        bbox = bbox_sd[i]
+        # Calculate the grid size, where the aspect ratio of the discrete grid 
+        # remains the same as the that of the original subdomain (bbox)
+        grid_size_x = np.sqrt(n_points * oversamp_r1 * \
+            (bbox[0][1] - bbox[0][0]) / (bbox[1][1] - bbox[1][0]))
+        grid_size_y = grid_size_x * (bbox[1][1] - bbox[1][0]) / (bbox[0][1] - bbox[0][0])
+        grid_size_x, grid_size_y = max(int(np.round(grid_size_x)), 2), \
+            max(int(np.round(grid_size_y)), 2)
+        # Naive NUFFT
+        grid_x = np.linspace(bbox_sd[i][0][0], bbox_sd[i][0][1], num=grid_size_x)
+        grid_y = np.linspace(bbox_sd[i][1][0], bbox_sd[i][1][1], num=grid_size_y)
         grid_x, grid_y = np.meshgrid(grid_x, grid_y)
         grid_val = interp_linear(grid_x, grid_y)
         # Fill nan values
         nan_indices = np.isnan(grid_val)[..., 0, 0, 0]
         fill_vals = interp_rbf(np.stack((grid_x[nan_indices], grid_y[nan_indices]), axis=1))
         grid_val[nan_indices] = fill_vals
+        freq = np.fft.rfft2(grid_val, axes=(0, 1))
+        # Compute a square embeddings
+        square_freq = np.zeros((S, S // 2 + 1, T+1, 3, ntotal)) + 0j
+        square_freq[:min(S//2, freq.shape[0]//2), :min(S//2+1, freq.shape[1]//2+1), ...] = \
+            freq[:min(S//2, freq.shape[0]//2), :min(S//2+1, freq.shape[1]//2+1), ...]
+        square_freq[-min(S//2, freq.shape[0]//2):, :min(S//2+1, freq.shape[1]//2+1), ...] = \
+            freq[-min(S//2, freq.shape[0]//2):, :min(S//2+1, freq.shape[1]//2+1), ...]
+        grid_val = np.fft.irfft2(square_freq, s=(S, S), axes=(0, 1))
         input_u_sd_grid.append(np.transpose(grid_val, (4, 0, 1, 2, 3)))
-
     input_u_sd_grid = np.transpose(np.array(input_u_sd_grid), (1, 2, 3, 4, 5, 0))
 
     input_u_sd = np.zeros((ntotal, 
