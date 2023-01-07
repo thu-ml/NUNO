@@ -3,7 +3,7 @@ from tqdm import tqdm
 from util.utilities import *
 from torch.optim import Adam
 from ..nufno.nufno_2d import NUFNO2d
-from .kdtree import KDTree
+from src.kdtree.tree import KDTree
 from sklearn.neighbors import KernelDensity
 
 
