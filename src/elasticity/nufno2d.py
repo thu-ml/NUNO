@@ -116,7 +116,9 @@ class NUFNO2d(nn.Module):
         self.fc0 = nn.Linear(self.dim_in + 2, self.n_channels)
         self.fc1 = nn.Linear(self.n_channels, 128)
         self.fc2 = nn.Linear(128, self.dim_out)
-        self.fc_interp = nn.Linear(self.n_channels, self.n_channels * self.n_subdomains)
+        # For interpolation
+        self.fc_interp0 = nn.Linear(self.n_channels, 128)
+        self.fc_interp1 = nn.Linear(128, self.n_channels * self.n_subdomains)
 
 
     def forward(self, u, xy_sd):
@@ -140,7 +142,9 @@ class NUFNO2d(nn.Module):
         # Interpolation back to point cloud
         xy_sd = xy_sd.reshape(batch_size * self.n_subdomains, -1, 2)
         u = u.permute(0, 2, 3, 1)
-        u = self.fc_interp(u).\
+        u = self.fc_interp0(u)
+        u = F.gelu(u)
+        u = self.fc_interp1(u).\
             reshape(-1, self.width1, self.width2, self.n_channels, self.n_subdomains).\
             permute(0, 4, 3, 1, 2).\
             reshape(-1, self.n_channels, self.width1, self.width2)
