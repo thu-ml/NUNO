@@ -22,7 +22,7 @@ ntotal = ntrain + ntest
 T_in = 15   # input: [0, 0.15)
 T = 30      # output: [0.15, 0.30)
 
-batch_size = 1024
+batch_size = 2048
 learning_rate = 0.001
 epochs = 200
 iterations = epochs*((ntrain*n_points)//batch_size)
