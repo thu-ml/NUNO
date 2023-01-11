@@ -283,6 +283,93 @@ class DeepONet(StructureNN):
         params['bias'] = nn.Parameter(torch.zeros([1]))
         return params
 
+class MultiDeepONet(StructureNN):
+    '''Deep operator network (multiple output channel).
+    Input: [batch size, branch_dim + trunk_dim]
+    Output: [batch size, output_dim]
+    '''
+
+    def __init__(self, branch_dim, trunk_dim, branch_depth=2, trunk_depth=3, 
+                width=50, activation='relu', output_dim=1, hidden_dim=16):
+        super(MultiDeepONet, self).__init__()
+        self.branch_dim = branch_dim
+        self.trunk_dim = trunk_dim
+        self.branch_depth = branch_depth
+        self.trunk_depth = trunk_depth
+        self.width = width
+        self.activation = activation
+        self.output_dim = output_dim
+        self.hidden_dim = hidden_dim
+        
+        self.modus = self.__init_modules()
+        self.params = self.__init_params()
+
+        
+    def forward(self, x):
+        x_branch, x_trunk = x[..., :self.branch_dim], x[..., -self.trunk_dim:]
+        # x_branch = self.modus['Branch'](x_branch)
+        for i in range(1, self.branch_depth):
+            x_branch = self.modus['BrActM{}'.format(i)](self.modus['BrLinM{}'.format(i)](x_branch))
+        x_branch = self.modus['BrLinM{}'.format(self.branch_depth)](x_branch)
+
+        for i in range(1, self.trunk_depth):
+            x_trunk = self.modus['TrActM{}'.format(i)](self.modus['TrLinM{}'.format(i)](x_trunk))
+        x_trunk = self.modus['TrLinM{}'.format(self.trunk_depth)](x_trunk)
+
+        x_branch = x_branch.reshape(-1, self.output_dim, self.hidden_dim)
+        x_trunk = x_trunk.reshape_as(x_branch)
+        return torch.sum(x_branch * x_trunk, dim=-1) + self.params['bias']
+
+    def trunk_forward(self, x):
+        x_trunk = x[..., -self.trunk_dim:]
+        
+        for i in range(1, self.trunk_depth):
+            x_trunk = self.modus['TrActM{}'.format(i)](self.modus['TrLinM{}'.format(i)](x_trunk))
+        x_trunk = self.modus['TrLinM{}'.format(self.trunk_depth)](x_trunk)
+
+        return x_trunk
+    
+    def branch_forward(self, x):
+        x_branch = x[..., :self.branch_dim]
+        
+        for i in range(1, self.branch_depth):
+            x_branch = self.modus['BrActM{}'.format(i)](self.modus['BrLinM{}'.format(i)](x_branch))
+        x_branch = self.modus['BrLinM{}'.format(self.branch_depth)](x_branch)
+        
+        return x_branch
+        
+    def __init_modules(self):
+        modules = nn.ModuleDict()
+        # modules['Branch'] = FNN(self.branch_dim, self.width, self.branch_depth, self.width,
+        #                         self.activation, self.initializer)
+        if self.branch_depth > 1:
+            modules['BrLinM1'] = nn.Linear(self.branch_dim, self.width)
+            modules['BrActM1'] = self.Act
+            for i in range(2, self.branch_depth):
+                modules['BrLinM{}'.format(i)] = nn.Linear(self.width, self.width)
+                modules['BrActM{}'.format(i)] = self.Act
+            modules['BrLinM{}'.format(self.branch_depth)] = nn.Linear(self.width, self.hidden_dim * self.output_dim)
+        else:
+            modules['BrLinM{}'.format(self.branch_depth)] = nn.Linear(self.branch_dim, 
+                self.hidden_dim * self.output_dim)
+            
+
+        if self.trunk_depth > 1:
+            modules['TrLinM1'] = nn.Linear(self.trunk_dim, self.width)
+            modules['TrActM1'] = self.Act
+            for i in range(2, self.trunk_depth):
+                modules['TrLinM{}'.format(i)] = nn.Linear(self.width, self.width)
+                modules['TrActM{}'.format(i)] = self.Act
+            modules['TrLinM{}'.format(self.trunk_depth)] = nn.Linear(self.width, self.hidden_dim * self.output_dim)
+        else:
+            modules['TrLinM{}'.format(self.trunk_depth)] = nn.Linear(self.truck_dim, 
+                self.hidden_dim * self.output_dim)
+        return modules
+            
+    def __init_params(self):
+        params = nn.ParameterDict()
+        params['bias'] = nn.Parameter(torch.zeros(1, self.output_dim))
+        return params
 
 # print the number of parameters
 def count_params(model):
