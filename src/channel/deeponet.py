@@ -23,9 +23,9 @@ T_in = 15   # input: [0, 0.15)
 T = 30      # output: [0.15, 0.30)
 
 batch_size = 2048
-learning_rate = 0.001
-epochs = 200
-iterations = epochs*((ntrain*n_points)//batch_size)
+learning_rate = 0.0001
+epochs = 201
+patience = epochs // 20
 
 N_neurons = 64
 layers = 5
@@ -49,7 +49,7 @@ def main(branch_train, truck_train, y_train, branch_test, truck_test, y_test):
     model.to(device)
 
     optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=iterations)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience)
 
     testloss = LpLoss(size_average=False)
     myloss = torch.nn.MSELoss(reduction='sum')
@@ -88,7 +88,7 @@ def main(branch_train, truck_train, y_train, branch_test, truck_test, y_test):
                 y = y_normalizer.decode(y)
                 test_mse += loss.item()
 
-        scheduler.step()
+        scheduler.step(train_mse)
 
         train_mse/=(ntrain*n_points)
         test_mse/=(ntest*n_points)
@@ -98,7 +98,6 @@ def main(branch_train, truck_train, y_train, branch_test, truck_test, y_test):
                 .format(ep, t2-t1, train_mse, test_mse))
     
     # Final test (in cpu, cause gpu run out of memory)
-    test_l2 = 0
     test_u_l2 = 0
     test_v_l2 = 0
     test_p_l2 = 0
@@ -118,15 +117,14 @@ def main(branch_train, truck_train, y_train, branch_test, truck_test, y_test):
 
             y = y.reshape(1, n_points, T-T_in, output_dim)
             out = out.reshape_as(y)
-            test_l2 += testloss(out, y).item()
             test_u_l2 += testloss(out[..., 0], y[..., 0]).item()
             test_v_l2 += testloss(out[..., 1], y[..., 1]).item()
             test_p_l2 += testloss(out[..., 2], y[..., 2]).item()
 
-    test_l2/=ntest
     test_u_l2/=ntest
     test_v_l2/=ntest
     test_p_l2/=ntest
+    test_l2=(test_u_l2+test_v_l2+test_p_l2)/3
 
     # Return final results
     return np.nan, test_l2, t2-t0, test_u_l2, test_v_l2, test_p_l2

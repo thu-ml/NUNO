@@ -62,7 +62,7 @@ T = 30      # output: [0.15, 0.30)
 output_dim = 3
 
 epochs = 201
-iterations = epochs*(ntrain//batch_size)
+patience = epochs // 20
 
 # GNO
 radius = 0.05
@@ -86,7 +86,7 @@ def main(data_train, data_test):
     model = KernelNN3(width, ker_width, depth, edge_features, 
         in_width=node_features, out_width=node_features).cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=iterations)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience)
     print(count_params(model))
 
     myloss = MultiLpLoss(size_average=False)
@@ -110,7 +110,7 @@ def main(data_train, data_test):
             optimizer.step()
             train_l2 += l2.item()
 
-        scheduler.step()
+        scheduler.step(train_l2)
         t2 = default_timer()
 
         model.eval()
