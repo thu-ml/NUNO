@@ -228,6 +228,77 @@ class LpLoss(object):
     def __call__(self, x, y):
         return self.rel(x, y)
 
+# Loss function with rel/abs Lp loss (multiple channel)
+class MultiLpLoss(object):
+    def __init__(self, d=2, p=2, size_average=True, reduction=True):
+        super(MultiLpLoss, self).__init__()
+
+        #Dimension and Lp-norm type are postive
+        assert d > 0 and p > 0
+
+        self.d = d
+        self.p = p
+        self.reduction = reduction
+        self.size_average = size_average
+
+    def abs(self, x, y, multi_channel=True):
+        num_examples = x.size()[0]
+        num_channel = x.size()[-1]
+
+        #Assume uniform mesh
+        h = 1.0 / (x.size()[1] - 1.0)
+        if multi_channel:
+            x = x.reshape(num_examples, -1, num_channel)
+            y = y.reshape(num_examples, -1, num_channel)
+        else:
+            x = x.reshape(num_examples, -1)
+            y = y.reshape(num_examples, -1)
+        all_norms = (h**(self.d/self.p))*torch.norm(
+            x - y, self.p, 1
+        )
+        if multi_channel:
+            all_norms = torch.mean(all_norms, dim=-1)
+
+        if self.reduction:
+            if self.size_average:
+                return torch.mean(all_norms)
+            else:
+                return torch.sum(all_norms)
+
+        return all_norms
+
+    def rel(self, x, y, multi_channel=True):
+        num_examples = x.size()[0]
+        num_channel = x.size()[-1]
+
+        if multi_channel:
+            x = x.reshape(num_examples, -1, num_channel)
+            y = y.reshape(num_examples, -1, num_channel)
+        else:
+            x = x.reshape(num_examples, -1)
+            y = y.reshape(num_examples, -1)
+
+        diff_norms = torch.norm(x - y, self.p, 1)
+        y_norms = torch.norm(y, self.p, 1)
+        rel_norms = diff_norms/y_norms
+        if multi_channel:
+            rel_norms = torch.mean(rel_norms, dim=-1)
+
+        if self.reduction:
+            if self.size_average:
+                return torch.mean(rel_norms)
+            else:
+                return torch.sum(rel_norms)
+
+        return rel_norms
+
+    def __call__(self, x, y, multi_channel=True):
+        '''
+        The first dimension is batch and the last is
+        channel.\n
+        The average is taken along the channel dimension. 
+        '''
+        return self.rel(x, y, multi_channel)
 
 # A simple feedforward neural network
 class DenseNet(torch.nn.Module):
