@@ -26,7 +26,7 @@ ntrain = 1000
 ntest = 200 
 ndata = ntrain + ntest
 
-batch_size = 1024
+batch_size = 16384
 learning_rate = 0.001
 epochs = 1000
 step_size = 100
@@ -62,7 +62,6 @@ def main(x_train, y_train, x_test, y_test):
     for ep in range(epochs):
         t1 = default_timer()
         train_mse = 0
-        train_l2 = 0
         model.train()
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
@@ -76,10 +75,8 @@ def main(x_train, y_train, x_test, y_test):
 
             optimizer.step()
             train_mse += loss.item()
-            train_l2 += testloss(out, y).item()
         
         test_mse = 0
-        test_l2 = 0
         model.eval()
         with torch.no_grad():
             for x, y in test_loader:
@@ -89,21 +86,51 @@ def main(x_train, y_train, x_test, y_test):
                 out = y_normalizer.decode(out)
                 y = y_normalizer.decode(y)
                 test_mse += loss.item()
-                test_l2 += testloss(out, y).item()
-
 
         # torch.save(model, "DeepONet.model")
         scheduler.step()
 
         train_mse/=(ntrain * N_p)
         test_mse/=(ntest * N_p)
-        train_l2/=(ntrain * N_p)
-        test_l2/=(ntest * N_p)
 
         t2 = default_timer()
-        print("[Epoch {}] Time: {:.1f}s MSE: {:>4e} L2: {:>4e} Test_L2: {:>4e}"
-                .format(ep, t2-t1, train_mse, train_l2, test_l2))
+        print("[Epoch {}] Time: {:.1f}s MSE: {:>4e} Test_MSE: {:>4e}"
+                .format(ep, t2-t1, train_mse, test_mse))
     
+    # Final test
+    train_l2 = 0
+    test_l2 = 0
+    model.eval()
+    with torch.no_grad():
+        for i in range(ntrain):
+            x = x_train[i*N_p:(i+1)*N_p, :]
+            y = y_train[i*N_p:(i+1)*N_p, :]
+            x, y = x.to(device), y.to(device)
+
+            out = model(x)
+            out = y_normalizer.decode(out)
+            y = y_normalizer.decode(y)
+
+            y = y.reshape(1, -1)
+            out = out.reshape_as(y)
+            train_l2 += testloss(out, y).item()
+
+        for i in range(ntest):
+            x = x_test[i*N_p:(i+1)*N_p, :]
+            y = y_test[i*N_p:(i+1)*N_p, :]
+            x, y = x.to(device), y.to(device)
+
+            out = model(x)
+            out = y_normalizer.decode(out)
+            y = y_normalizer.decode(y)
+
+            y = y.reshape(1, -1)
+            out = out.reshape_as(y)
+            test_l2 += testloss(out, y).item()
+
+    train_l2/=ntrain
+    test_l2/=ntest
+
     # Return final results
     return train_l2, test_l2, t2-t0
 
