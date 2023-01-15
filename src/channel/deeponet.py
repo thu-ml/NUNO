@@ -147,6 +147,9 @@ if __name__ == "__main__":
             input_data[i, :, T_in:T, :].reshape(n_points, -1)
 
     x_data = torch.from_numpy(x_data).cuda().float()
+    x_normalizer = UnitGaussianNormalizer(x_data[:ntrain])
+    x_data = x_normalizer.encode(x_data)
+    
     branch_train = torch.from_numpy(branch_data[0:ntrain*n_points]).cuda().long()
     truck_train = torch.from_numpy(truck_data[0:ntrain*n_points]).cuda().float()
     y_train = torch.from_numpy(y_data[0:ntrain*n_points]).cuda().float()

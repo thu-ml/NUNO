@@ -47,8 +47,6 @@ class KernelNN3(torch.nn.Module):
 # configs
 ################################################################
 PATH = 'data/channel/'
-INPUT_PATH = PATH + 'Random_UnitCell_XY_10.npy'
-OUTPUT_PATH = PATH + 'Random_UnitCell_sigma_10.npy'
 
 ntrain = 1000
 ntest = 200
@@ -102,6 +100,7 @@ def main(data_train, data_test):
 
             optimizer.zero_grad()
             out = model(batch)
+            out = y_normalizer.decode(out)
 
             out = out.reshape(batch_size, n_points, T-T_in, output_dim)
             l2 = myloss(out, batch.y.reshape_as(out))
@@ -111,7 +110,6 @@ def main(data_train, data_test):
             train_l2 += l2.item()
 
         scheduler.step(train_l2)
-        t2 = default_timer()
 
         model.eval()
         test_u_l2 = 0.0
@@ -122,12 +120,14 @@ def main(data_train, data_test):
                 batch = batch.to(device)
 
                 out = model(batch)
+                out = y_normalizer.decode(out)
                 y = batch.y.reshape(batch_size, n_points, T-T_in, output_dim)
                 out = out.reshape_as(y)
                 test_u_l2 += myloss(out[..., 0], y[..., 0], multi_channel=False).item()
                 test_v_l2 += myloss(out[..., 1], y[..., 1], multi_channel=False).item()
                 test_p_l2 += myloss(out[..., 2], y[..., 2], multi_channel=False).item()
 
+        t2 = default_timer()
         ttrain[ep] = train_l2/ntrain
         test_u_l2/=ntest
         test_v_l2/=ntest
@@ -159,6 +159,12 @@ if __name__ == "__main__":
     y_train = input_data[:ntrain, :, T_in:T, :].reshape(ntrain, n_points, -1)
     x_test = input_data[-ntest:, :, :T_in, :].reshape(ntest, n_points, -1)
     y_test = input_data[-ntest:, :, T_in:T, :].reshape(ntest, n_points, -1)
+
+    x_normalizer = UnitGaussianNormalizer(x_train)
+    x_train = x_normalizer.encode(x_train)
+    x_test = x_normalizer.encode(x_test)
+
+    y_normalizer = UnitGaussianNormalizer(y_train)
 
     ################################################################
     # construct graphs
