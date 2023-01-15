@@ -12,7 +12,6 @@ import torch.nn.functional as F
 from util.utilities import *
 from scipy.interpolate import LinearNDInterpolator, RBFInterpolator
 
-set_random_seed(SEED_LIST[0])
 
 ################################################################
 # 3d fourier layers
@@ -75,7 +74,7 @@ class MLP(nn.Module):
         return x
 
 class FNO3d(nn.Module):
-    def __init__(self, modes1, modes2, modes3, width):
+    def __init__(self, modes1, modes2, modes3, width, in_channels=6, out_channels=3):
         super(FNO3d, self).__init__()
 
         """
@@ -97,7 +96,7 @@ class FNO3d(nn.Module):
         self.width = width
         self.padding = 6 # pad the domain if input is non-periodic
 
-        self.p = nn.Linear(6, self.width) # input channel is 6: (x_velocity, y_velocity, pressure) + 3 locations (u, v, p, x, y, t)
+        self.p = nn.Linear(in_channels, self.width) # input channel is 6: (x_velocity, y_velocity, pressure) + 3 locations (u, v, p, x, y, t)
         self.conv0 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
         self.conv1 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
         self.conv2 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
@@ -110,7 +109,7 @@ class FNO3d(nn.Module):
         self.w1 = nn.Conv3d(self.width, self.width, 1)
         self.w2 = nn.Conv3d(self.width, self.width, 1)
         self.w3 = nn.Conv3d(self.width, self.width, 1)
-        self.q = MLP(self.width, 3, self.width * 4) # output channel is 3: (u, v, p)
+        self.q = MLP(self.width, out_channels, self.width * 4) # output channel is 3: (u, v, p)
 
     def forward(self, x):
         grid = self.get_grid(x.shape, x.device)
@@ -173,125 +172,50 @@ n_points = 3809
 modes = 8
 width = 20
 
-batch_size = 10
+batch_size = 20
 learning_rate = 0.001
-epochs = 500
-iterations = epochs*(ntrain//batch_size)
+epochs = 501
+patience = epochs // 20
 
 S = 64      # grid size: 64 x 64
 T_in = 15   # input: [0, 0.15)
 T = 30      # output: [0.15, 0.30)
+output_dim = 3
 
 # Wether to save or load preprocessing results
 SAVE_PREP = False
 LOAD_PREP = True
 
 ################################################################
-# load data and preprocessing
-################################################################
-input_xy = np.load(PATH_XY)            # shape: (3809, 2)
-input_u = np.load(PATH_U)              # shape: (1200, 3809, 31, 3)
-if LOAD_PREP:
-    input_u_grid = np.load(PATH_U_G)   # shape: (1200, 64, 64, 31, 3) 
-else:
-    t1 = default_timer()
-    print("Start interpolation...")
-    # Interpolation from point cloud to uniform grid
-    point_cloud = input_xy
-    point_cloud_val = np.transpose(input_u, (1, 2, 3, 0)) 
-    interp_linear = LinearNDInterpolator(point_cloud, point_cloud_val)
-    interp_rbf = RBFInterpolator(point_cloud, point_cloud_val, neighbors=6)
-    # Uniform Grid
-    grid_x = np.linspace(np.min(point_cloud[:, 0]), np.max(point_cloud[:, 0]), num=S)
-    grid_y = np.linspace(np.min(point_cloud[:, 1]), np.min(point_cloud[:, 1]), num=S)
-    grid_x, grid_y = np.meshgrid(grid_x, grid_y)
-    grid_val = interp_linear(grid_x, grid_y)
-    # Fill nan values
-    nan_indices = np.isnan(grid_val)[..., 0, 0, 0]
-    fill_vals = interp_rbf(np.stack((grid_x[nan_indices], grid_y[nan_indices]), axis=1))
-    grid_val[nan_indices] = fill_vals
-
-    input_u_grid = np.transpose(grid_val, (4, 0, 1, 2, 3)) 
-    if SAVE_PREP:
-        np.save(PATH_U_G, input_u_grid)
-    t2 = default_timer()
-    print("Finish interpolation, time elapsed: {:.1f}s".format(t2-t1))
-
-input_xy = torch.from_numpy(input_xy).cuda().float()
-input_xy = input_xy.unsqueeze(0).repeat([batch_size, 1, 1])
-
-input_u_grid = torch.from_numpy(input_u_grid).float()
-input_u = torch.from_numpy(input_u).float()
-
-train_a = input_u_grid[:ntrain, ..., :T_in, :].cuda()
-test_a = input_u_grid[-ntest:, ..., :T_in, :].cuda()
-
-train_u = input_u[:ntrain, ..., T_in:T, :].cuda()
-test_u = input_u[-ntest:, ..., T_in:T, :].cuda()
-
-a_normalizer = UnitGaussianNormalizer(train_a)
-train_a = a_normalizer.encode(train_a)
-test_a = a_normalizer.encode(test_a)
-
-y_normalizer = UnitGaussianNormalizer(train_u)
-
-train_loader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(train_a, train_u), 
-    batch_size=batch_size, shuffle=True,
-    generator=torch.Generator(device=device)
-)
-test_loader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(test_a, test_u), 
-    batch_size=batch_size, shuffle=False,
-    generator=torch.Generator(device=device)
-)
-
-
-################################################################
 # training and evaluation
 ################################################################
-model = FNO3d(modes, modes, modes, width).cuda()
-print(count_params(model))
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=iterations)
+def main(train_a, train_u, test_a, test_u):
+    train_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(train_a, train_u), 
+        batch_size=batch_size, shuffle=True,
+        generator=torch.Generator(device=device)
+    )
+    test_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(test_a, test_u), 
+        batch_size=batch_size, shuffle=False,
+        generator=torch.Generator(device=device)
+    )
 
-myloss = LpLoss(size_average=False)
-y_normalizer.cuda()
-for ep in range(epochs):
-    model.train()
-    t1 = default_timer()
-    train_l2 = 0
-    for x, y in train_loader:
-        optimizer.zero_grad()
-        out = model(x).reshape(batch_size, S, S, -1)
-            # Output shape: (batch, S, S, (T-T_in) * 3)
 
-        # Interpolation (from grids to point cloud)
-        # Normalize to [-1, 1]
-        xy = input_xy[...]
-        _min, _max = torch.min(xy, dim=1, keepdim=True)[0], torch.max(xy, dim=1, keepdim=True)[0]
-        xy = (xy - _min) / (_max - _min) * 2 - 1
-        xy = xy.unsqueeze(-2)
-            # Output shape: (batch, n_points, 1, 2)
-        u = F.grid_sample(input=out.permute(0, 3, 1, 2), grid=xy, 
-            padding_mode='border', align_corners=False)
-            # Output shape: (batch, (T-T_in) * 3, n_points, 1)
-        out = u.squeeze(-1).permute(0, 2, 1)\
-            .reshape(batch_size, n_points, T-T_in, 3)
-            # Output shape: (batch_size, n_points, T-T_in, 3)
+    model = FNO3d(modes, modes, modes, width).cuda()
+    print(count_params(model))
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience)
 
-        out = y_normalizer.decode(out)
-        l2 = myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1))
-        l2.backward()
-
-        optimizer.step()
-        scheduler.step()
-        train_l2 += l2.item()
-
-    model.eval()
-    test_l2 = 0.0
-    with torch.no_grad():
-        for x, y in test_loader:
+    myloss = MultiLpLoss(size_average=False)
+    y_normalizer.cuda()
+    t0 = default_timer()
+    for ep in range(epochs):
+        model.train()
+        t1 = default_timer()
+        train_l2 = 0
+        for x, y in train_loader:
+            optimizer.zero_grad()
             out = model(x).reshape(batch_size, S, S, -1)
                 # Output shape: (batch, S, S, (T-T_in) * 3)
 
@@ -310,11 +234,134 @@ for ep in range(epochs):
                 # Output shape: (batch_size, n_points, T-T_in, 3)
 
             out = y_normalizer.decode(out)
-            test_l2 += myloss(out.reshape(batch_size, -1), y.reshape(batch_size, -1)).item()
+            out = out.reshape(batch_size, n_points, T-T_in, output_dim)
+            l2 = myloss(out, y.reshape_as(out))
+            l2.backward()
 
-    train_l2 /= ntrain
-    test_l2 /= ntest
+            optimizer.step()
+            train_l2 += l2.item()
 
-    t2 = default_timer()
-    print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
-                .format(ep, t2-t1, train_l2, test_l2))
+        scheduler.step(train_l2)
+
+        model.eval()
+        test_l2 = 0.0
+        test_u_l2 = 0.0
+        test_v_l2 = 0.0
+        test_p_l2 = 0.0
+        with torch.no_grad():
+            for x, y in test_loader:
+                out = model(x).reshape(batch_size, S, S, -1)
+                    # Output shape: (batch, S, S, (T-T_in) * 3)
+
+                # Interpolation (from grids to point cloud)
+                # Normalize to [-1, 1]
+                xy = input_xy[...]
+                _min, _max = torch.min(xy, dim=1, keepdim=True)[0], torch.max(xy, dim=1, keepdim=True)[0]
+                xy = (xy - _min) / (_max - _min) * 2 - 1
+                xy = xy.unsqueeze(-2)
+                    # Output shape: (batch, n_points, 1, 2)
+                u = F.grid_sample(input=out.permute(0, 3, 1, 2), grid=xy, 
+                    padding_mode='border', align_corners=False)
+                    # Output shape: (batch, (T-T_in) * 3, n_points, 1)
+                out = u.squeeze(-1).permute(0, 2, 1)\
+                    .reshape(batch_size, n_points, T-T_in, 3)
+                    # Output shape: (batch_size, n_points, T-T_in, 3)
+
+                out = y_normalizer.decode(out)
+                out = out.reshape(batch_size, n_points, T-T_in, output_dim)
+                y = y.reshape_as(out)
+                test_u_l2 += myloss(out[..., 0], y[..., 0], multi_channel=False).item()
+                test_v_l2 += myloss(out[..., 1], y[..., 1], multi_channel=False).item()
+                test_p_l2 += myloss(out[..., 2], y[..., 2], multi_channel=False).item()
+
+        train_l2 /= ntrain
+        test_u_l2/=ntest
+        test_v_l2/=ntest
+        test_p_l2/=ntest
+        test_l2 = (test_u_l2 + test_v_l2 + test_p_l2)/3
+
+        t2 = default_timer()
+        print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
+                    .format(ep, t2-t1, train_l2, test_l2))
+    
+    # Return final results
+    return train_l2, test_l2, t2-t0, test_u_l2, test_v_l2, test_p_l2
+
+
+if __name__ == "__main__":
+    ################################################################
+    # load data and preprocessing
+    ################################################################
+    input_xy = np.load(PATH_XY)            # shape: (3809, 2)
+    input_u = np.load(PATH_U)              # shape: (1200, 3809, 31, 3)
+    if LOAD_PREP:
+        input_u_grid = np.load(PATH_U_G)   # shape: (1200, 64, 64, 31, 3) 
+    else:
+        t1 = default_timer()
+        print("Start interpolation...")
+        # Interpolation from point cloud to uniform grid
+        point_cloud = input_xy
+        point_cloud_val = np.transpose(input_u, (1, 2, 3, 0)) 
+        interp_linear = LinearNDInterpolator(point_cloud, point_cloud_val)
+        interp_rbf = RBFInterpolator(point_cloud, point_cloud_val, neighbors=6)
+        # Uniform Grid
+        grid_x = np.linspace(np.min(point_cloud[:, 0]), np.max(point_cloud[:, 0]), num=S)
+        grid_y = np.linspace(np.min(point_cloud[:, 1]), np.min(point_cloud[:, 1]), num=S)
+        grid_x, grid_y = np.meshgrid(grid_x, grid_y)
+        grid_val = interp_linear(grid_x, grid_y)
+        # Fill nan values
+        nan_indices = np.isnan(grid_val)[..., 0, 0, 0]
+        fill_vals = interp_rbf(np.stack((grid_x[nan_indices], grid_y[nan_indices]), axis=1))
+        grid_val[nan_indices] = fill_vals
+
+        input_u_grid = np.transpose(grid_val, (4, 0, 1, 2, 3)) 
+        if SAVE_PREP:
+            np.save(PATH_U_G, input_u_grid)
+        t2 = default_timer()
+        print("Finish interpolation, time elapsed: {:.1f}s".format(t2-t1))
+
+    input_xy = torch.from_numpy(input_xy).cuda().float()
+    input_xy = input_xy.unsqueeze(0).repeat([batch_size, 1, 1])
+
+    input_u_grid = torch.from_numpy(input_u_grid).float()
+    input_u = torch.from_numpy(input_u).float()
+
+    train_a = input_u_grid[:ntrain, ..., :T_in, :].cuda()
+    test_a = input_u_grid[-ntest:, ..., :T_in, :].cuda()
+
+    train_u = input_u[:ntrain, ..., T_in:T, :].cuda()
+    test_u = input_u[-ntest:, ..., T_in:T, :].cuda()
+
+    a_normalizer = UnitGaussianNormalizer(train_a)
+    train_a = a_normalizer.encode(train_a)
+    test_a = a_normalizer.encode(test_a)
+
+    y_normalizer = UnitGaussianNormalizer(train_u)
+
+    ################################################################
+    # re-experiment with different random seeds
+    ################################################################
+    train_l2_res = []
+    test_l2_res = []
+    time_res = []
+    test_u_l2_res = []
+    test_v_l2_res = []
+    test_p_l2_res = []
+    for i in range(5):
+        print("=== Round %d ==="%(i+1))
+        set_random_seed(SEED_LIST[i])
+        train_l2, test_l2, time, test_u_l2, test_v_l2, test_p_l2 = \
+            main(train_a, train_u, test_a, test_u)
+        train_l2_res.append(train_l2)
+        test_l2_res.append(test_l2)
+        time_res.append(time)
+        test_u_l2_res.append(test_u_l2)
+        test_v_l2_res.append(test_v_l2)
+        test_p_l2_res.append(test_p_l2)
+    print("=== Finish ===")
+    for i in range(5):
+        print('''[Round {}] Time: {:.1f}s Train_L2: {:>4e} Test_L2: {:>4e}
+            \tu_L2: {:>4e} v_L2: {:>4e} p_L2: {:>4e}'''
+            .format(i+1, time_res[i], train_l2_res[i], test_l2_res[i], 
+            test_u_l2_res[i], test_v_l2_res[i], test_p_l2_res[i]))
+
