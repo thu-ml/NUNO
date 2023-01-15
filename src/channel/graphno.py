@@ -91,6 +91,7 @@ def main(data_train, data_test):
     ttrain = np.zeros((epochs,))
     ttest = np.zeros((epochs,))
     t0 = default_timer()
+    y_normalizer.cuda()
     for ep in range(epochs):
         t1 = default_timer()
         train_l2 = 0.0
