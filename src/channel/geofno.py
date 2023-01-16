@@ -325,7 +325,7 @@ PATH = 'data/channel/'
 ntrain = 1000
 ntest = 200
 ntotal = ntrain + ntest
-batch_size = 5
+batch_size = 10
 learning_rate = 0.001
 
 n_points = 3809
@@ -374,7 +374,7 @@ def main(x_train, y_train, x_test, y_test):
         train_l2 = 0.0
         model.train()
         for x, y in train_loader:
-            # x, y = x.cuda(), y.cuda()
+            x, y = x.cuda(), y.cuda()
             batchsize = x.shape[0]
             xy = input_xy.expand(batchsize * T_in, -1, -1)
             out = model(x, 
@@ -399,7 +399,7 @@ def main(x_train, y_train, x_test, y_test):
         test_p_l2 = 0.0
         with torch.no_grad():
             for x, y in test_loader:
-                # x, y = x.cuda(), y.cuda()
+                x, y = x.cuda(), y.cuda()
                 batchsize = x.shape[0]
                 xy = input_xy.expand(batchsize * T_in, -1, -1)
                 out = model(x, 
@@ -438,10 +438,10 @@ if __name__ == "__main__":
     input_data = torch.from_numpy(input_data).float()
     # shape (ntotal, n_points, T+1, 3)
 
-    x_train = input_data[:ntrain, :, :T_in, :].cuda()
-    y_train = input_data[:ntrain, :, T_in:T, :].cuda()
-    x_test = input_data[-ntest:, :, :T_in, :].cuda()
-    y_test = input_data[-ntest:, :, T_in:T, :].cuda()
+    x_train = input_data[:ntrain, :, :T_in, :]
+    y_train = input_data[:ntrain, :, T_in:T, :]
+    x_test = input_data[-ntest:, :, :T_in, :]
+    y_test = input_data[-ntest:, :, T_in:T, :]
 
     x_normalizer = UnitGaussianNormalizer(x_train)
     x_train = x_normalizer.encode(x_train)

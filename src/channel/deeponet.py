@@ -24,7 +24,7 @@ T = 30      # output: [0.15, 0.30)
 
 batch_size = 2048
 learning_rate = 0.0001
-epochs = 201
+epochs = 101
 patience = epochs // 20
 
 N_neurons = 64

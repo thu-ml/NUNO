@@ -296,7 +296,6 @@ if __name__ == "__main__":
         # shape: (batch * n_subdomains, n_points_sd_padded, 1, 2)
 
     s1_padded, s2_padded = input_u_sd_grid.shape[1:3]
-    print(s1_padded, s2_padded)
     input_u_sd_grid = torch.from_numpy(
         input_u_sd_grid.reshape(n_total, s1_padded, s2_padded, T+1, -1)).float()
     input_u_sd = torch.from_numpy(input_u_sd).float()

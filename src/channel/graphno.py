@@ -59,7 +59,7 @@ T_in = 15   # input: [0, 0.15)
 T = 30      # output: [0.15, 0.30)
 output_dim = 3
 
-epochs = 201
+epochs = 101
 patience = epochs // 20
 
 # GNO
