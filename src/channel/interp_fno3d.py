@@ -74,7 +74,7 @@ class MLP(nn.Module):
         return x
 
 class FNO3d(nn.Module):
-    def __init__(self, modes1, modes2, modes3, width, in_channels=6, out_channels=3):
+    def __init__(self, modes1, modes2, modes3, width, in_channels=3, out_channels=3):
         super(FNO3d, self).__init__()
 
         """
@@ -96,7 +96,7 @@ class FNO3d(nn.Module):
         self.width = width
         self.padding = 6 # pad the domain if input is non-periodic
 
-        self.p = nn.Linear(in_channels, self.width) # input channel is 6: (x_velocity, y_velocity, pressure) + 3 locations (u, v, p, x, y, t)
+        self.p = nn.Linear(in_channels+3, self.width) # input channel is 6: (x_velocity, y_velocity, pressure) + 3 locations (u, v, p, x, y, t)
         self.conv0 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
         self.conv1 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
         self.conv2 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
