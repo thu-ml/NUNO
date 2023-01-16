@@ -1,6 +1,6 @@
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from .interp_fno3d import SpectralConv3d
+from .interp_fno import SpectralConv3d
 from util.utilities import *
 from timeit import default_timer
 
