@@ -90,7 +90,7 @@ def main(train_a_sd, train_u_sd, test_a_sd, test_u_sd):
         for x, y in train_loader:
             optimizer.zero_grad()
             out = model(x).reshape(batch_size, s1_padded, s2_padded, 
-                (T-T_in), 3, n_subdomains)\
+                (T-T_in), output_dim, n_subdomains)\
                 .permute(0, 5, 1, 2, 3, 4)\
                 .reshape(-1, s1_padded, s2_padded, (T-T_in) * 3)
                 # Output shape: (batch * n_subdomains, 
@@ -125,7 +125,7 @@ def main(train_a_sd, train_u_sd, test_a_sd, test_u_sd):
         with torch.no_grad():
             for x, y in test_loader:
                 out = model(x).reshape(batch_size, s1_padded, s2_padded, 
-                    (T-T_in), 3, n_subdomains)\
+                    (T-T_in), output_dim, n_subdomains)\
                     .permute(0, 5, 1, 2, 3, 4)\
                     .reshape(-1, s1_padded, s2_padded, (T-T_in) * 3)
                     # Output shape: (batch * n_subdomains, 
