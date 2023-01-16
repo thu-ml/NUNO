@@ -68,7 +68,7 @@ class MLP(nn.Module):
         return x
 
 class FNO2d(nn.Module):
-    def __init__(self, modes1, modes2, width, in_channels=47, out_channels=3):
+    def __init__(self, modes1, modes2, width, in_channels=45, out_channels=3):
         super(FNO2d, self).__init__()
 
         """
@@ -89,7 +89,7 @@ class FNO2d(nn.Module):
         self.width = width
         self.padding = 8 # pad the domain if input is non-periodic
 
-        self.p = nn.Linear(in_channels, self.width) # input channel is 47: the solution of the previous 15 timesteps + 2 locations
+        self.p = nn.Linear(in_channels+2, self.width) # input channel is 47: the solution of the previous 15 timesteps + 2 locations
         self.conv0 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv1 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
         self.conv2 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)

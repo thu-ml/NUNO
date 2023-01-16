@@ -78,7 +78,7 @@ def main(train_a_sd, train_u_sd, test_a_sd, test_u_sd):
     # training and evaluation
     ################################################################
     model = FNO2d(modes, modes, width,
-        in_channels=output_dim*n_subdomains*T_in+2,
+        in_channels=output_dim*n_subdomains*T_in,
         out_channels=output_dim*n_subdomains).cuda()
     print(count_params(model))
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
