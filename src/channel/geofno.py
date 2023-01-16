@@ -1,5 +1,6 @@
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from .interp_fno3d import SpectralConv3d
 from util.utilities import *
 from timeit import default_timer
 
@@ -140,9 +141,9 @@ class SpectralConv2d(nn.Module):
         return Y
 
 
-class FNO2d(nn.Module):
-    def __init__(self, modes1, modes2, width, in_channels, out_channels, is_mesh=True, s1=40, s2=40):
-        super(FNO2d, self).__init__()
+class FNO3d(nn.Module):
+    def __init__(self, modes1, modes2, modes3, width, in_channels, out_channels, is_mesh=True, s1=40, s2=40):
+        super(FNO3d, self).__init__()
 
         """
         The overall network. It contains 4 layers of the Fourier layer.
@@ -159,6 +160,7 @@ class FNO2d(nn.Module):
 
         self.modes1 = modes1
         self.modes2 = modes2
+        self.modes3 = modes3
         self.width = width
         self.is_mesh = is_mesh
         self.s1 = s1
@@ -167,17 +169,17 @@ class FNO2d(nn.Module):
         self.fc0 = nn.Linear(in_channels, self.width)  # input channel is 3: (a(x, y), x, y)
 
         self.conv0 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2, s1, s2)
-        self.conv1 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        self.conv2 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
-        self.conv3 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2)
+        self.conv1 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
+        self.conv2 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
+        self.conv3 = SpectralConv3d(self.width, self.width, self.modes1, self.modes2, self.modes3)
         self.conv4 = SpectralConv2d(self.width, self.width, self.modes1, self.modes2, s1, s2)
-        self.w1 = nn.Conv2d(self.width, self.width, 1)
-        self.w2 = nn.Conv2d(self.width, self.width, 1)
-        self.w3 = nn.Conv2d(self.width, self.width, 1)
+        self.w1 = nn.Conv3d(self.width, self.width, 1)
+        self.w2 = nn.Conv3d(self.width, self.width, 1)
+        self.w3 = nn.Conv3d(self.width, self.width, 1)
         self.b0 = nn.Conv2d(2, self.width, 1)
-        self.b1 = nn.Conv2d(2, self.width, 1)
-        self.b2 = nn.Conv2d(2, self.width, 1)
-        self.b3 = nn.Conv2d(2, self.width, 1)
+        self.b1 = nn.Conv3d(3, self.width, 1)
+        self.b2 = nn.Conv3d(3, self.width, 1)
+        self.b3 = nn.Conv3d(3, self.width, 1)
         self.b4 = nn.Conv1d(2, self.width, 1)
 
         self.fc1 = nn.Linear(self.width, 128)
@@ -194,15 +196,21 @@ class FNO2d(nn.Module):
             x_in = u
         if self.is_mesh and x_out == None:
             x_out = u
-        grid = self.get_grid([u.shape[0], self.s1, self.s2], u.device).permute(0, 3, 1, 2)
+        grid = self.get_grid([u.shape[0] * T_in, self.s1, self.s2], u.device).permute(0, 3, 1, 2)
 
         u = self.fc0(u)
-        u = u.permute(0, 2, 1)
+        u = u.permute(0, 2, 3, 1)
+        u = u.reshape(-1, self.width, n_points)
 
         uc1 = self.conv0(u, x_in=x_in, iphi=iphi, code=code)
         uc3 = self.b0(grid)
         uc = uc1 + uc3
         uc = F.gelu(uc)
+
+        uc = uc.reshape(-1, T_in, self.width, self.s1, self.s2)
+        uc = uc.permute(0, 2, 3, 4, 1)
+        grid = self.get_grid3d(uc.shape, uc.device)
+        grid = grid.permute(0, 4, 1, 2, 3)
 
         uc1 = self.conv1(uc)
         uc2 = self.w1(uc)
@@ -222,11 +230,15 @@ class FNO2d(nn.Module):
         uc = uc1 + uc2 + uc3
         uc = F.gelu(uc)
 
+        uc = uc.permute(0, 4, 1, 2, 3)
+        uc = uc.reshape(-1, self.width, self.s1, self.s2)
+
         u = self.conv4(uc, x_out=x_out, iphi=iphi, code=code)
         u3 = self.b4(x_out.permute(0, 2, 1))
         u = u + u3
 
-        u = u.permute(0, 2, 1)
+        u = u.reshape(-1, T_in, self.width, n_points)
+        u = u.permute(0, 3, 1, 2)
         u = self.fc1(u)
         u = F.gelu(u)
         u = self.fc2(u)
@@ -239,6 +251,16 @@ class FNO2d(nn.Module):
         gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
         gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
         return torch.cat((gridx, gridy), dim=-1).to(device)
+    
+    def get_grid3d(self, shape, device):
+        batchsize, _, size_x, size_y, size_z = shape[0], shape[1], shape[2], shape[3], shape[4]
+        gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
+        gridx = gridx.reshape(1, size_x, 1, 1, 1).repeat([batchsize, 1, size_y, size_z, 1])
+        gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
+        gridy = gridy.reshape(1, 1, size_y, 1, 1).repeat([batchsize, size_x, 1, size_z, 1])
+        gridz = torch.tensor(np.linspace(0, 1, size_z), dtype=torch.float)
+        gridz = gridz.reshape(1, 1, 1, size_z, 1).repeat([batchsize, size_x, size_y, 1, 1])
+        return torch.cat((gridx, gridy, gridz), dim=-1).to(device)
 
 
 class IPHI(nn.Module):
@@ -257,7 +279,7 @@ class IPHI(nn.Module):
         self.fc3 = nn.Linear(4*self.width, 4*self.width)
         self.fc4 = nn.Linear(4*self.width, 2)
         self.activation = torch.tanh
-        self.center = torch.tensor([0.0001,0.0001], device="cuda").reshape(1,1,2)
+        self.center = torch.tensor([0.5001,0.5001], device="cuda").reshape(1,1,2)
 
         self.B = np.pi*torch.pow(2, torch.arange(0, self.width//4, dtype=torch.float, device="cuda")).reshape(1,1,1,self.width//4)
 
@@ -303,22 +325,21 @@ PATH = 'data/channel/'
 ntrain = 1000
 ntest = 200
 ntotal = ntrain + ntest
-batch_size = 10
+batch_size = 5
 learning_rate = 0.001
 
 n_points = 3809
 T_in = 15   # input: [0, 0.15)
 T = 30      # output: [0.15, 0.30)
 output_dim = 3
-step = 1
 
-epochs = 201
+epochs = 101
 patience = epochs // 20
 
 # Geo-FNO
-modes = 12
+modes = 8
 width = 20
-hidden_grid_size = 64
+hidden_grid_size = int(np.round(np.sqrt(n_points)))
 
 ################################################################
 # training and evaluation
@@ -335,8 +356,8 @@ def main(x_train, y_train, x_test, y_test):
         generator=torch.Generator(device=device)
     )
 
-    model = FNO2d(modes, modes, width, 
-        in_channels=T_in*output_dim, out_channels=output_dim, 
+    model = FNO3d(modes, modes, modes, width, 
+        in_channels=output_dim, out_channels=output_dim, 
         s1=hidden_grid_size, s2=hidden_grid_size).cuda()
     model_iphi = IPHI().cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -352,25 +373,13 @@ def main(x_train, y_train, x_test, y_test):
         t1 = default_timer()
         train_l2 = 0.0
         model.train()
-        for xx, y in train_loader:
-            # xx, y = xx.cuda(), y.cuda()
-            batchsize = xx.shape[0]
-            xy = input_xy.repeat(batchsize, 1, 1)
+        for x, y in train_loader:
+            # x, y = x.cuda(), y.cuda()
+            batchsize = x.shape[0]
+            xy = input_xy.expand(batchsize * T_in, -1, -1)
+            out = model(x, 
+                x_in=xy, x_out=xy, iphi=model_iphi)
 
-            # Time step marching 
-            for t in range(0, T-T_in, step):
-                im =model(xx.reshape(batchsize, n_points, -1), 
-                    x_in=xy, x_out=xy, iphi=model_iphi)
-                im = im.unsqueeze(-2)
-
-                if t == 0:
-                    pred = im
-                else:
-                    pred = torch.cat((pred, im), -2)
-                
-                xx = torch.cat((xx[..., step:, :], im), dim=-2)
-
-            out = pred.reshape(batchsize, n_points, -1)
             out = y_normalizer.decode(out)
             optimizer.zero_grad()
 
@@ -389,25 +398,13 @@ def main(x_train, y_train, x_test, y_test):
         test_v_l2 = 0.0
         test_p_l2 = 0.0
         with torch.no_grad():
-            for xx, y in test_loader:
-                # xx, y = xx.cuda(), y.cuda()
-                batchsize = xx.shape[0]
-                xy = input_xy.repeat(batchsize, 1, 1)
+            for x, y in test_loader:
+                # x, y = x.cuda(), y.cuda()
+                batchsize = x.shape[0]
+                xy = input_xy.expand(batchsize * T_in, -1, -1)
+                out = model(x, 
+                    x_in=xy, x_out=xy, iphi=model_iphi)
 
-                # Time step marching 
-                for t in range(0, T-T_in, step):
-                    im =model(xx.reshape(batchsize, n_points, -1), 
-                        x_in=xy, x_out=xy, iphi=model_iphi)
-                    im = im.unsqueeze(-2)
-
-                    if t == 0:
-                        pred = im
-                    else:
-                        pred = torch.cat((pred, im), -2)
-                    
-                    xx = torch.cat((xx[..., step:, :], im), dim=-2)
-
-                out = pred.reshape(batchsize, n_points, -1)
                 out = y_normalizer.decode(out)
                 y = y.reshape(batchsize, n_points, T-T_in, output_dim)
                 out = out.reshape_as(y)
@@ -442,9 +439,9 @@ if __name__ == "__main__":
     # shape (ntotal, n_points, T+1, 3)
 
     x_train = input_data[:ntrain, :, :T_in, :].cuda()
-    y_train = input_data[:ntrain, :, T_in:T, :].reshape(ntrain, n_points, -1).cuda()
+    y_train = input_data[:ntrain, :, T_in:T, :].cuda()
     x_test = input_data[-ntest:, :, :T_in, :].cuda()
-    y_test = input_data[-ntest:, :, T_in:T, :].reshape(ntest, n_points, -1).cuda()
+    y_test = input_data[-ntest:, :, T_in:T, :].cuda()
 
     x_normalizer = UnitGaussianNormalizer(x_train)
     x_train = x_normalizer.encode(x_train)
