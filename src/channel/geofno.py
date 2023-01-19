@@ -339,7 +339,6 @@ patience = epochs // 20
 # Geo-FNO
 modes = 8
 width = 20
-hidden_grid_size = int(np.round(np.sqrt(n_points)))
 
 ################################################################
 # training and evaluation
@@ -357,10 +356,10 @@ def main(x_train, y_train, x_test, y_test):
     )
 
     model = FNO3d(modes, modes, modes, width, 
-        in_channels=output_dim, out_channels=output_dim, 
-        s1=hidden_grid_size, s2=hidden_grid_size).cuda()
+        in_channels=output_dim, out_channels=output_dim).cuda()
     model_iphi = IPHI().cuda()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    params = list(model.parameters()) + list(model_iphi.parameters())
+    optimizer = torch.optim.Adam(params, lr=learning_rate, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=patience)
     print(count_params(model))
 
