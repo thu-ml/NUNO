@@ -37,6 +37,22 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if torch.cuda.is_available():
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
+# Calculate the grid shape
+def cal_grid_shape(tot_size, aspect_ratios: list[float]):
+    '''
+    Given the total size and (geometric) aspect ratio,
+    output the grid shape.
+    '''
+    dim = len(aspect_ratios)
+    shape = [None] * dim
+    shape[0] = tot_size * np.prod([aspect_ratios[0] / \
+        aspect_ratios[j] for j in range(1, dim)])
+    shape[0] = shape[0] ** (1 / dim)
+    for j in range(1, dim):
+        shape[j] = aspect_ratios[j] / \
+            aspect_ratios[0] * shape[0]
+    shape = [max(int(np.round(l)), 2) for l in shape]
+    return shape
 
 # Reading data
 class MatReader(object):
