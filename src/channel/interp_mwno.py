@@ -51,6 +51,8 @@ class MWT3d(nn.Module):
             if i < self.nCZ-1:
                 x = F.relu(x)
 
+        # De-padding
+        x = x[:, :Nx, :Ny, ...]
         x = x.view(B, Nx, Ny, T, -1) # collapse c and k**2
         x = self.Lc0(x)
         x = F.relu(x)

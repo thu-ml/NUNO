@@ -368,7 +368,7 @@ class MWT_CZ3d(nn.Module):
         
         B, Nx, Ny, T, c, ich = x.shape # (B, Nx, Ny, T, c, k**2)
         # Padded zeros are considered
-        ns = math.ceil(np.log2(Nx))
+        ns = max(math.ceil(np.log2(Nx)), math.ceil(np.log2(Ny)))
 
         Ud = torch.jit.annotate(List[Tensor], [])
         Us = torch.jit.annotate(List[Tensor], [])
