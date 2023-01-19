@@ -1,3 +1,10 @@
+"""
+Reference
+----------
+author:   Zongyi Li
+source:   https://github.com/neural-operator/fourier_neural_operator
+reminder: slightly modified, e.g., file path, better output format, etc.
+"""
 from timeit import default_timer
 from tqdm import tqdm
 import torch.nn.functional as F
@@ -169,7 +176,7 @@ learning_rate = 0.001
 epochs = 501
 patience = epochs // 20
 
-oversamp_ratio = 1.0
+oversamp_ratio = 1.5
 S = int(np.round(np.sqrt(oversamp_ratio * n_points)))
 T_in = 15   # input: [0, 0.15)
 T = 30      # output: [0.15, 0.30)

@@ -145,7 +145,7 @@ learning_rate = 0.001
 epochs = 501
 patience = epochs // 20
 
-oversamp_ratio = 1.0
+oversamp_ratio = 1.5
 S = int(np.round(np.sqrt(oversamp_ratio * n_points)))
 T_in = 15   # input: [0, 0.15)
 T = 30      # output: [0.15, 0.30)

@@ -43,7 +43,7 @@ epochs = 501
 patience = epochs // 20     # scheduler
 
 # Grid params
-oversamp_ratio = 1.0        # used to calculate grid sizes
+oversamp_ratio = 1.5        # used to calculate grid sizes
 T_in = 15                   # input: [0, 0.15)
 T = 30                      # output: [0.15, 0.30)
 output_dim = 3              # (u, v, p)
