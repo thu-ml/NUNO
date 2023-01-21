@@ -246,7 +246,7 @@ if __name__ == "__main__":
             nan_indices = np.isnan(grid_val)[..., 0, 0, 0]
             fill_vals = interp_rbf(np.stack((grid_x[nan_indices], grid_y[nan_indices]), axis=1))
             grid_val[nan_indices] = fill_vals
-            # Compute padded embeddings
+            # Resize to the a unified size via FFT-IFFT
             freq = np.fft.rfft2(grid_val, axes=(0, 1))
             s1_padded, s2_padded = max_grid_size_y, max_grid_size_x 
             if is_transposed[i]:
