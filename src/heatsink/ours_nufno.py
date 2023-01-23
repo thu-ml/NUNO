@@ -5,8 +5,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from src.kdtree.tree import KDTree
 from util.utilities import *
 from .interp_fno import FNO3d
-from .encoder import Encoder
-from scipy.interpolate import LinearNDInterpolator, RBFInterpolator
+from scipy.interpolate import LinearNDInterpolator, \
+    NearestNDInterpolator, RegularGridInterpolator
 
 
 ################################################################
@@ -14,17 +14,13 @@ from scipy.interpolate import LinearNDInterpolator, RBFInterpolator
 ################################################################
 # Data path
 PATH = 'data/heatsink/'
-# Input point cloud locations 
-PATH_INP_XY = PATH + 'Heatsink_Input_XY.npy'
-# Input point cloud values (u0)
-PATH_INP_A = PATH + 'Heatsink_Input_Function.npy'
-# Output point cloud locations
-PATH_OUP_XYZ = PATH + 'Heatsink_Output_XYZ.npy'
-# Output point cloud values
-PATH_OUP_U = PATH + 'Heatsink_Output_Function.npy'
+# Point cloud locations
+PATH_XYZ = PATH + 'Heatsink_Output_XYZ.npy'
+# Point cloud values (T, u, v, w, p)
+PATH_U = PATH + 'Heatsink_Output_Function.npy'
 
 # Dataset params
-n_train = 1000
+n_train = 900
 n_test = 100
 n_total = n_train + n_test
 # The number of points in (output) point cloud
@@ -39,11 +35,12 @@ batch_size = 20
 learning_rate = 0.001
 epochs = 501
 patience = epochs // 20     # scheduler
+reg_lambda = 1e-4
 
 # Grid params
 oversamp_ratio = 1.0        # used to calculate grid sizes
-input_dim = 1               # (u0)
-output_dim = 5              # (T, u, v, w, p)
+input_dim = 3               # (u, v, w)
+output_dim = 2              # (T, p)
 
 # K-D tree params
 n_subdomains = 16
@@ -52,49 +49,53 @@ n_subdomains = 16
 ################################################################
 # Training and evaluation
 ################################################################
-def main(train_a, train_u_sd, test_a, test_u_sd):
+def main(train_a, train_u, train_u_pc, test_a, test_u, test_u_pc):
     train_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(train_a, train_u_sd), 
+        torch.utils.data.TensorDataset(train_a, train_u, 
+            train_u_pc), 
         batch_size=batch_size, shuffle=True,
         generator=torch.Generator(device=device)
     )
     test_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(test_a, test_u_sd),
+        torch.utils.data.TensorDataset(test_a, test_u, 
+            test_u_pc),
         batch_size=batch_size, shuffle=False,
         generator=torch.Generator(device=device)
     )
 
     model = FNO3d(modes, modes, modes, width, 
-        in_channels=input_dim, 
+        in_channels=input_dim*n_subdomains, 
         out_channels=output_dim*n_subdomains).cuda()
-    model_encoder = Encoder(target_size=grid_shape[0]).cuda()
-    print(count_params(model) + count_params(model_encoder))
-    params = list(model.parameters()) + \
-        list(model_encoder.parameters())
-    optimizer = Adam(params, 
+    print(count_params(model))
+    optimizer = Adam(model.parameters(), 
         lr=learning_rate, weight_decay=1e-4)
     scheduler = ReduceLROnPlateau(optimizer, patience=patience)
 
     myloss = MultiLpLoss(size_average=False)
+    regloss = nn.MSELoss()
     y_normalizer.cuda()
     t0 = default_timer()
     for ep in range(epochs):
         model.train()
         t1 = default_timer()
         train_l2 = 0
-        for x, y in train_loader:
+        train_tot_loss = 0.0
+        for x, y, y_pc in train_loader:
             optimizer.zero_grad()
-            x = model_encoder(x)
-            out = model(x).reshape(batch_size, grid_shape[2], grid_shape[1], 
-                grid_shape[0], output_dim, n_subdomains)\
-                .permute(0, 5, 4, 1, 2, 3)\
-                .reshape(-1, output_dim, 
-                    grid_shape[2], grid_shape[1], grid_shape[0])
-                # Output shape: (batch * n_subdomains, output_dim
-                #   s3, s2, s1)
+            out = model(x).reshape(batch_size, 
+                grid_shape[1], grid_shape[0], 
+                grid_shape[2], output_dim, n_subdomains)
+            out = y_normalizer.decode(out)
+            loss1 = myloss(out.permute(0, 1, 2, 3, 5, 4), 
+                y.permute(0, 1, 2, 3, 5, 4))
 
             # Interpolation (from grids to point cloud)
-            u = F.grid_sample(input=out, grid=output_xyz_sd, 
+            out = out.permute(0, 5, 4, 1, 2, 3)\
+                .reshape(-1, output_dim, 
+                    grid_shape[1], grid_shape[0], grid_shape[2])
+                # Output shape: (batch * n_subdomains, output_dim
+                #   s2, s1, s3)
+            u = F.grid_sample(input=out, grid=xyz_sd, 
                 padding_mode='border', align_corners=False)
                 # Output shape: (batch * n_subdomains, output_dim, 
                 #   n_points_sd_padded, 1, 1)
@@ -103,100 +104,94 @@ def main(train_a, train_u_sd, test_a, test_u_sd):
                 .permute(0, 2, 3, 1)
                 # Output shape: (batch_size, n_points_sd_padded, 
                 #   output_dim, n_subdomains)
-            out = y_normalizer.decode(out)
-            out = out * output_u_mask_sd
-            out = out * output_u_sd_mask
-
-            l2 = myloss(out.permute(0, 1, 3, 2), 
-                y.permute(0, 1, 3, 2))
-            l2.backward()
+            
+            out = out * input_u_sd_mask
+            loss = loss1 + reg_lambda * regloss(out, y_pc)
+            loss.backward()
 
             optimizer.step()
-            train_l2 += l2.item()
+            train_l2 += loss1.item()
+            train_tot_loss += loss.item()
 
-        scheduler.step(train_l2)
+        scheduler.step(train_tot_loss)
 
         model.eval()
-        test_T_l2 = 0.0
-        test_u_l2 = 0.0
-        test_v_l2 = 0.0
-        test_w_l2 = 0.0
-        test_p_l2 = 0.0
+        test_l2 = 0.0
         with torch.no_grad():
-            for x, y in test_loader:
-                x = model_encoder(x)
-                out = model(x).reshape(batch_size, grid_shape[2], grid_shape[1], 
-                    grid_shape[0], output_dim, n_subdomains)\
-                    .permute(0, 5, 4, 1, 2, 3)\
-                    .reshape(-1, output_dim, 
-                        grid_shape[2], grid_shape[1], grid_shape[0])
-                    # Output shape: (batch * n_subdomains, output_dim
-                    #   s3, s2, s1)
-
-                # Interpolation (from grids to point cloud)
-                u = F.grid_sample(input=out, grid=output_xyz_sd, 
-                    padding_mode='border', align_corners=False)
-                    # Output shape: (batch * n_subdomains, output_dim, 
-                    #   n_points_sd_padded, 1, 1)
-                out = u.squeeze(-1).squeeze(-1).permute(0, 2, 1)\
-                    .reshape(batch_size, n_subdomains, -1, output_dim)\
-                    .permute(0, 2, 3, 1)
-                    # Output shape: (batch_size, n_points_sd_padded, 
-                    #   output_dim, n_subdomains)
+            for x, y, _ in test_loader:
+                out = model(x).reshape(batch_size, 
+                    grid_shape[1], grid_shape[0], 
+                    grid_shape[2], output_dim, n_subdomains)
                 out = y_normalizer.decode(out)
-                out = out * output_u_mask_sd
-                out = out * output_u_sd_mask
 
-                out, y = out.permute(0, 1, 3, 2), \
-                    y.permute(0, 1, 3, 2)
-                test_T_l2 += myloss(out[..., 0], 
-                    y[..., 0], multi_channel=False).item()
-                test_u_l2 += myloss(out[..., 1], 
-                    y[..., 1], multi_channel=False).item()
-                test_v_l2 += myloss(out[..., 2], 
-                    y[..., 2], multi_channel=False).item()
-                test_w_l2 += myloss(out[..., 3], 
-                    y[..., 3], multi_channel=False).item()
-                test_p_l2 += myloss(out[..., 4], 
-                    y[..., 4], multi_channel=False).item()
+                test_l2 += myloss(out.permute(0, 1, 2, 3, 5, 4), 
+                    y.permute(0, 1, 2, 3, 5, 4)).item()
 
         train_l2 /= n_train
-        test_T_l2 /= n_test
-        test_u_l2 /= n_test
-        test_v_l2 /= n_test
-        test_w_l2 /= n_test
-        test_p_l2 /= n_test
-        test_l2 = (
-            test_T_l2 + test_u_l2 +
-            test_v_l2 + test_w_l2 + test_p_l2)/3
+        test_l2 /= n_test
 
         t2 = default_timer()
         print("[Epoch {}] Time: {:.1f}s L2: {:>4e} Test_L2: {:>4e}"
                     .format(ep, t2-t1, train_l2, test_l2))
 
+    with torch.no_grad():
+        out = model(test_a_sd_grid).reshape(n_test, 
+                grid_shape[1], grid_shape[0], 
+                grid_shape[2], output_dim, n_subdomains)
+        out = y_normalizer.decode(out).cpu().numpy()
+        out = np.transpose(out, (0, 2, 1, 3, 4, 5))
+
+        pred = np.zeros((n_test, max_n_points_sd, 
+            output_dim, n_subdomains))
+        for i in range(n_subdomains):
+            bbox = bbox_sd[i]
+            back_order = np.argsort(order_sd[i])
+            _grid_shape = grid_shape[back_order]
+            data = np.transpose(out[..., i], 
+                (back_order+1).tolist() + [4, 0])
+
+            grid_x = np.linspace(bbox[0][0], bbox[0][1], 
+                num=_grid_shape[0])
+            grid_y = np.linspace(bbox[1][0], bbox[1][1], 
+                num=_grid_shape[1])
+            grid_z = np.linspace(bbox[2][0], bbox[2][1], 
+                num=_grid_shape[2])
+            interp = RegularGridInterpolator(
+                (grid_x, grid_y, grid_z), data)
+            data = interp(xyz[indices_sd[i], :])
+            data = np.transpose(data, (2, 0, 1))
+            pred[:, :len(indices_sd[i]), :, i] = data
+
+        pred = torch.tensor(pred).cpu()
+        truth = test_u_point_cloud
+        pred, truth = pred.permute(0, 1, 3, 2), \
+            truth.permute(0, 1, 3, 2)
+        
+        test_l2 = myloss(pred, truth).item()
+        test_T_l2 = myloss(pred[..., 0], truth[..., 0], 
+            multi_channel=False).item()
+        test_p_l2 = myloss(pred[..., 1], truth[..., 1], 
+            multi_channel=False).item()
+
     # Return final results
-    return train_l2, test_l2, t2-t0, \
-        test_T_l2, test_u_l2, test_v_l2, test_w_l2, test_p_l2
+    return train_l2, test_l2 / n_test, t2-t0, \
+        test_T_l2 / n_test, test_p_l2 / n_test
 
 
 if __name__ == "__main__":
     ################################################################
     # Load data and preprocessing
     ################################################################
-    input_xy = np.load(PATH_INP_XY)         # shape: (85, 2)
-    input_a = np.load(PATH_INP_A)           # shape: (1100, 85, 1)
-    output_xyz = np.load(PATH_OUP_XYZ)      # shape: (19517, 3)
-    output_u = np.load(PATH_OUP_U)          # shape: (1100, 19517, 5)
-    # Mask the point where u, v, w, p has no definition
-    output_u_mask = np.where(output_u[0] == 0, 0, 1)
-        # shape: (19517, 5)
+    xyz = np.load(PATH_XYZ)                 # shape: (19517, 3)
+    input_point_cloud = np.load(PATH_U)     # shape: (1000, 19517, 5)
+
     print("Start KD-Tree splitting...")
     t1 = default_timer()
-    point_cloud = output_xyz.tolist()
+    point_cloud = xyz.tolist()
     # Use kd-tree to generate subdomain division
     tree= KDTree(
         point_cloud, dim=3, n_subdomains=n_subdomains, 
-        n_blocks=6**3, return_indices=True
+        n_blocks=8, return_indices=True
     )
     tree.solve()
     # Gather subdomain info
@@ -205,93 +200,121 @@ if __name__ == "__main__":
     # Pad the point cloud of each subdomain to the same size
     max_n_points_sd = np.max([len(indices_sd[i]) 
         for i in range(n_subdomains)])
-    output_xyz_sd = np.zeros((1, max_n_points_sd, n_subdomains, 3))
-    output_u_sd = np.zeros((n_total, 
-        max_n_points_sd, output_dim, n_subdomains))
-    output_u_mask_sd = np.zeros((1, 
-        max_n_points_sd, output_dim, n_subdomains))
-    # Another mask is used to ignore padded zeros when calculating errors
-    output_u_sd_mask = np.zeros((1, max_n_points_sd, 1, n_subdomains))
-    # The grid shape
+    xyz_sd = np.zeros((1, max_n_points_sd, n_subdomains, 3))
+    input_point_cloud_sd = np.zeros((n_total, 
+        max_n_points_sd, input_dim+output_dim, n_subdomains))
+    # Mask is used to ignore padded zeros when calculating errors
+    input_u_sd_mask = np.zeros((1, max_n_points_sd, 1, n_subdomains))
+    # The maximum grid shape of subdomains
     grid_shape = [-1] * 3
         # (s1, s2, s3)
+    # The new coordinate order of each subdomain
+    # (after long side alignment)
+    order_sd = []
     for i in range(n_subdomains):
         # Normalize to [-1, 1]
-        xy = output_xyz[indices_sd[i], :]
-        _min, _max = np.min(xy, axis=0, keepdims=True), \
-            np.max(xy, axis=0, keepdims=True)
-        xy = (xy - _min) / (_max - _min) * 2 - 1
+        _xyz = xyz[indices_sd[i], :]
+        _min, _max = np.min(_xyz, axis=0, keepdims=True), \
+            np.max(_xyz, axis=0, keepdims=True)
+        _xyz = (_xyz - _min) / (_max - _min) * 2 - 1
         # Long side alignment
         bbox = bbox_sd[i]
         scales = [bbox[j][1] - bbox[j][0] for j in range(3)]
         order = np.argsort(scales)
-        xy = xy[:, order]
+        _xyz = _xyz[:, order]
+        order_sd.append(order.tolist())
         # Calculate the grid shape
         _grid_shape = cal_grid_shape(
             oversamp_ratio * len(indices_sd[i]), scales)
         _grid_shape.sort()
         grid_shape = np.maximum(grid_shape, _grid_shape)
         # Applying
-        output_xyz_sd[0, :len(indices_sd[i]), i, :] = xy
-        output_u_sd[:, :len(indices_sd[i]), :, i] = \
-            output_u[:, indices_sd[i], :]
-        output_u_mask_sd[0, :len(indices_sd[i]), :, i] = \
-            output_u_mask[indices_sd[i], :]
-        output_u_sd_mask[0, :len(indices_sd[i]), 0, i] = 1.
+        xyz_sd[0, :len(indices_sd[i]), i, :] = _xyz
+        input_point_cloud_sd[:, :len(indices_sd[i]), :, i] = \
+            input_point_cloud[:, indices_sd[i], :]
+        input_u_sd_mask[0, :len(indices_sd[i]), 0, i] = 1.
     print(grid_shape)
+    grid_shape = np.array(grid_shape)
     t2 = default_timer()
     print("Finish KD-Tree splitting, time elapsed: {:.1f}s".format(t2-t1))
 
     # Interpolation from point cloud to uniform grid
     t1 = default_timer()
     print("Start interpolation...")
-    point_cloud = input_xy
-    point_cloud_val = np.transpose(input_a, (1, 2, 0)) 
+    input_sd_grid = []
+    point_cloud = xyz
+    point_cloud_val = np.transpose(input_point_cloud, (1, 2, 0)) 
     interp_linear = LinearNDInterpolator(point_cloud, point_cloud_val)
-    interp_rbf = RBFInterpolator(point_cloud, point_cloud_val, neighbors=6)
-    # Uniform Grid
-    grid_x = np.linspace(np.min(point_cloud[:, 0]), 
-        np.max(point_cloud[:, 0]), num=grid_shape[1])
-    grid_y = np.linspace(np.min(point_cloud[:, 1]), 
-        np.max(point_cloud[:, 1]), num=grid_shape[2])
-    grid_x, grid_y = np.meshgrid(grid_x, grid_y)
-    grid_val = interp_linear(grid_x, grid_y)
-    # Fill nan values
-    nan_indices = np.isnan(grid_val)[..., 0, 0]
-    fill_vals = interp_rbf(np.stack((grid_x[nan_indices], grid_y[nan_indices]), axis=1))
-    grid_val[nan_indices] = fill_vals
+    interp_nearest = NearestNDInterpolator(point_cloud, point_cloud_val)
+    for i in range(n_subdomains):
+        bbox = bbox_sd[i]
+        _grid_shape = grid_shape[np.argsort(order_sd[i])]
+        # Linear interpolation
+        grid_x = np.linspace(bbox[0][0], bbox[0][1], 
+            num=_grid_shape[0])
+        grid_y = np.linspace(bbox[1][0], bbox[1][1], 
+            num=_grid_shape[1])
+        grid_z = np.linspace(bbox[2][0], bbox[2][1], 
+            num=_grid_shape[2])
+        grid_x, grid_y, grid_z = np.meshgrid(
+            grid_x, grid_y, grid_z, indexing='ij')
+        grid_val = interp_linear(grid_x, grid_y, grid_z)
+        # Fill nan values
+        nan_indices = np.isnan(grid_val)[..., 0, 0]
+        fill_vals = interp_nearest(
+            np.stack((
+                grid_x[nan_indices], grid_y[nan_indices],
+                grid_z[nan_indices]), axis=1))
+        grid_val[nan_indices] = fill_vals
+        # Long size alignment
+        grid_val = np.transpose(grid_val, 
+            order_sd[i] + [3, 4])
+        input_sd_grid.append(np.transpose(grid_val, (4, 0, 1, 2, 3)))
+    # Convert indexing to 'xy'
+    input_sd_grid = np.transpose(
+        np.array(input_sd_grid), (1, 3, 2, 4, 5, 0))
 
-    input_a_grid = np.transpose(grid_val, (3, 0, 1, 2)) 
-    input_a_grid = np.expand_dims(input_a_grid, axis=-1)
-        # shape: (ntotal, s3, s2, 1, 1)
     t2 = default_timer()
     print("Finish interpolation, time elapsed: {:.1f}s".format(t2-t1))
 
-    output_xyz_sd = torch.from_numpy(output_xyz_sd).cuda().float()
-    output_xyz_sd = output_xyz_sd.repeat([batch_size, 1, 1, 1])\
+    xyz_sd = torch.from_numpy(xyz_sd).cuda().float()
+    xyz_sd = xyz_sd.repeat([batch_size, 1, 1, 1])\
         .permute(0, 2, 1, 3)\
         .reshape(batch_size * n_subdomains, -1, 1, 1, 3)
         # shape: (batch * n_subdomains, n_points_sd_padded, 1, 1, 3)
-    output_u_sd = torch.from_numpy(output_u_sd).float()
+    input_point_cloud_sd = torch.from_numpy(input_point_cloud_sd).float()
         # shape: (ntotal, n_points_sd_padded, output_dim, n_subdomains)
-    output_u_mask_sd = torch.from_numpy(output_u_mask_sd).cuda().float()
-        # shape: (1, n_points_sd_padded, output_dim, n_subdomains)
-    output_u_sd_mask = torch.from_numpy(output_u_sd_mask).cuda().float()
+    input_u_sd_mask = torch.from_numpy(input_u_sd_mask).cuda().float()
         # shape: (1, n_points_sd_padded, 1, n_subdomains)
-    input_a_grid = torch.from_numpy(input_a_grid).float()
-        # shape: (ntotal, s3, s2, 1, 1)
+    input_sd_grid = torch.from_numpy(input_sd_grid).float()
+        # shape: (n_total, s2, s1, s3, input_dim + output_dim, n_subdomains)
 
-    train_a = input_a_grid[:n_train].cuda()
-    test_a = input_a_grid[-n_test:].cuda()
+    train_a_sd_grid = input_sd_grid[:n_train, ..., 1:4, :].\
+        reshape(n_train, grid_shape[1], 
+            grid_shape[0], grid_shape[2], -1).cuda()
+    test_a_sd_grid = input_sd_grid[-n_test:, ..., 1:4, :].\
+        reshape(n_test, grid_shape[1], 
+            grid_shape[0], grid_shape[2], -1).cuda()
 
-    train_u_sd = output_u_sd[:n_train].cuda()
-    test_u_sd = output_u_sd[-n_test:].cuda()
+    input_sd_grid = torch.stack((
+        input_sd_grid[..., 0, :],
+        input_sd_grid[..., 4, :]
+    ), dim=-2)
+    train_u_sd_grid = input_sd_grid[:n_train].cuda()
+    test_u_sd_grid = input_sd_grid[-n_test:].cuda()
 
-    a_normalizer = UnitGaussianNormalizer(train_a)
-    train_a = a_normalizer.encode(train_a)
-    test_a = a_normalizer.encode(test_a)
+    input_point_cloud_sd = torch.stack((
+        input_point_cloud_sd[..., 0, :],
+        input_point_cloud_sd[..., 4, :]
+    ), dim=-2)
+    train_u_point_cloud = input_point_cloud_sd[:n_train].cuda()
+    test_u_point_cloud = input_point_cloud_sd[-n_test:]
 
-    y_normalizer = UnitGaussianNormalizer(train_u_sd)
+    a_normalizer = UnitGaussianNormalizer(train_a_sd_grid)
+    train_a_sd_grid = a_normalizer.encode(train_a_sd_grid)
+    test_a_sd_grid = a_normalizer.encode(test_a_sd_grid)
+
+    y_normalizer = UnitGaussianNormalizer(train_u_sd_grid)
 
     ################################################################
     # Re-experiment with different random seeds
@@ -300,28 +323,22 @@ if __name__ == "__main__":
     test_l2_res = []
     time_res = []
     test_T_l2_res = []
-    test_u_l2_res = []
-    test_v_l2_res = []
-    test_w_l2_res = []
     test_p_l2_res = []
     for i in range(5):
         print("=== Round %d ==="%(i+1))
         set_random_seed(SEED_LIST[i])
-        train_l2, test_l2, time, test_T_l2, \
-        test_u_l2, test_v_l2, test_w_l2, test_p_l2 = \
-            main(train_a, train_u_sd, test_a, test_u_sd)
+        train_l2, test_l2, time, test_T_l2, test_p_l2 = \
+            main(train_a_sd_grid, train_u_sd_grid, 
+            train_u_point_cloud, test_a_sd_grid, 
+            test_u_sd_grid, test_u_point_cloud)
         train_l2_res.append(train_l2)
         test_l2_res.append(test_l2)
         time_res.append(time)
         test_T_l2_res.append(test_T_l2)
-        test_u_l2_res.append(test_u_l2)
-        test_v_l2_res.append(test_v_l2)
-        test_w_l2_res.append(test_w_l2)
         test_p_l2_res.append(test_p_l2)
     print("=== Finish ===")
     for i in range(5):
         print('''[Round {}] Time: {:.1f}s Train_L2: {:>4e} Test_L2: {:>4e}
-            \tT_L2: {:>4e} u_L2: {:>4e} v_L2: {:>4e} w_L2: {:>4e} p_L2: {:>4e}'''
+            \tT_L2: {:>4e} p_L2: {:>4e}'''
             .format(i+1, time_res[i], train_l2_res[i], test_l2_res[i], 
-            test_T_l2_res[i], test_u_l2_res[i], test_v_l2_res[i], 
-            test_w_l2_res[i], test_p_l2_res[i]))
+            test_T_l2_res[i], test_p_l2_res[i]))
