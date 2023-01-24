@@ -35,7 +35,7 @@ batch_size = 20
 learning_rate = 0.001
 epochs = 501
 patience = epochs // 20     # scheduler
-reg_lambda = 1e-4
+reg_lambda = 6e-3
 
 # Grid params
 oversamp_ratio = 1.0        # used to calculate grid sizes
