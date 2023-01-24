@@ -26,10 +26,6 @@ n_total = n_train + n_test
 # The number of points in (output) point cloud
 n_points = 19517
 
-# FNO configs
-modes = 8
-width = 20
-
 # Training params
 batch_size = 20
 learning_rate = 0.001

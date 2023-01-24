@@ -141,9 +141,6 @@ ntest = 100
 ntotal = ntrain + ntest
 n_points = 19517
 
-modes = 8
-width = 20
-
 batch_size = 20
 learning_rate = 0.001
 epochs = 501
