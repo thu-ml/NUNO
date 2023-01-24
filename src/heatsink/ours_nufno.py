@@ -15,9 +15,9 @@ from scipy.interpolate import LinearNDInterpolator, \
 # Data path
 PATH = 'data/heatsink/'
 # Point cloud locations
-PATH_XYZ = PATH + 'Heatsink_Output_XYZ.npy'
+PATH_XYZ = PATH + 'Heatsink_XYZ.npy'
 # Point cloud values (T, u, v, w, p)
-PATH_U = PATH + 'Heatsink_Output_Function.npy'
+PATH_U = PATH + 'Heatsink_Function.npy'
 
 # Dataset params
 n_train = 900
@@ -40,7 +40,7 @@ reg_lambda = 1e-4
 # Grid params
 oversamp_ratio = 1.0        # used to calculate grid sizes
 input_dim = 3               # (u, v, w)
-output_dim = 2              # (T, p)
+output_dim = 1              # (T)
 
 # K-D tree params
 n_subdomains = 16
@@ -71,7 +71,7 @@ def main(train_a, train_u, train_u_pc, test_a, test_u, test_u_pc):
         lr=learning_rate, weight_decay=1e-4)
     scheduler = ReduceLROnPlateau(optimizer, patience=patience)
 
-    myloss = MultiLpLoss(size_average=False)
+    myloss = LpLoss(size_average=False)
     regloss = nn.MSELoss()
     y_normalizer.cuda()
     t0 = default_timer()
@@ -86,8 +86,7 @@ def main(train_a, train_u, train_u_pc, test_a, test_u, test_u_pc):
                 grid_shape[1], grid_shape[0], 
                 grid_shape[2], output_dim, n_subdomains)
             out = y_normalizer.decode(out)
-            loss1 = myloss(out.permute(0, 1, 2, 3, 5, 4), 
-                y.permute(0, 1, 2, 3, 5, 4))
+            loss1 = myloss(out, y)
 
             # Interpolation (from grids to point cloud)
             out = out.permute(0, 5, 4, 1, 2, 3)\
@@ -124,8 +123,7 @@ def main(train_a, train_u, train_u_pc, test_a, test_u, test_u_pc):
                     grid_shape[2], output_dim, n_subdomains)
                 out = y_normalizer.decode(out)
 
-                test_l2 += myloss(out.permute(0, 1, 2, 3, 5, 4), 
-                    y.permute(0, 1, 2, 3, 5, 4)).item()
+                test_l2 += myloss(out, y).item()
 
         train_l2 /= n_train
         test_l2 /= n_test
@@ -164,18 +162,12 @@ def main(train_a, train_u, train_u_pc, test_a, test_u, test_u_pc):
 
         pred = torch.tensor(pred).cpu()
         truth = test_u_point_cloud
-        pred, truth = pred.permute(0, 1, 3, 2), \
-            truth.permute(0, 1, 3, 2)
         
-        test_l2 = myloss(pred, truth).item()
-        test_T_l2 = myloss(pred[..., 0], truth[..., 0], 
-            multi_channel=False).item()
-        test_p_l2 = myloss(pred[..., 1], truth[..., 1], 
-            multi_channel=False).item()
+        test_T_l2 = myloss(pred, truth).item()
 
     # Return final results
-    return train_l2, test_l2 / n_test, t2-t0, \
-        test_T_l2 / n_test, test_p_l2 / n_test
+    return train_l2, test_l2, t2-t0, \
+        test_T_l2 / n_test
 
 
 if __name__ == "__main__":
@@ -184,6 +176,7 @@ if __name__ == "__main__":
     ################################################################
     xyz = np.load(PATH_XYZ)                 # shape: (19517, 3)
     input_point_cloud = np.load(PATH_U)     # shape: (1000, 19517, 5)
+    input_point_cloud = input_point_cloud[:n_total]
 
     print("Start KD-Tree splitting...")
     t1 = default_timer()
@@ -202,7 +195,7 @@ if __name__ == "__main__":
         for i in range(n_subdomains)])
     xyz_sd = np.zeros((1, max_n_points_sd, n_subdomains, 3))
     input_point_cloud_sd = np.zeros((n_total, 
-        max_n_points_sd, input_dim+output_dim, n_subdomains))
+        max_n_points_sd, input_point_cloud.shape[-1], n_subdomains))
     # Mask is used to ignore padded zeros when calculating errors
     input_u_sd_mask = np.zeros((1, max_n_points_sd, 1, n_subdomains))
     # The maximum grid shape of subdomains
@@ -296,17 +289,11 @@ if __name__ == "__main__":
         reshape(n_test, grid_shape[1], 
             grid_shape[0], grid_shape[2], -1).cuda()
 
-    input_sd_grid = torch.stack((
-        input_sd_grid[..., 0, :],
-        input_sd_grid[..., 4, :]
-    ), dim=-2)
+    input_sd_grid = input_sd_grid[..., 0:1, :]
     train_u_sd_grid = input_sd_grid[:n_train].cuda()
     test_u_sd_grid = input_sd_grid[-n_test:].cuda()
 
-    input_point_cloud_sd = torch.stack((
-        input_point_cloud_sd[..., 0, :],
-        input_point_cloud_sd[..., 4, :]
-    ), dim=-2)
+    input_point_cloud_sd = input_point_cloud_sd[..., 0:1, :]
     train_u_point_cloud = input_point_cloud_sd[:n_train].cuda()
     test_u_point_cloud = input_point_cloud_sd[-n_test:]
 
@@ -323,11 +310,10 @@ if __name__ == "__main__":
     test_l2_res = []
     time_res = []
     test_T_l2_res = []
-    test_p_l2_res = []
     for i in range(5):
         print("=== Round %d ==="%(i+1))
         set_random_seed(SEED_LIST[i])
-        train_l2, test_l2, time, test_T_l2, test_p_l2 = \
+        train_l2, test_l2, time, test_T_l2 = \
             main(train_a_sd_grid, train_u_sd_grid, 
             train_u_point_cloud, test_a_sd_grid, 
             test_u_sd_grid, test_u_point_cloud)
@@ -335,10 +321,9 @@ if __name__ == "__main__":
         test_l2_res.append(test_l2)
         time_res.append(time)
         test_T_l2_res.append(test_T_l2)
-        test_p_l2_res.append(test_p_l2)
     print("=== Finish ===")
     for i in range(5):
         print('''[Round {}] Time: {:.1f}s Train_L2: {:>4e} Test_L2: {:>4e}
-            \tT_L2: {:>4e} p_L2: {:>4e}'''
+            \tT_L2: {:>4e}'''
             .format(i+1, time_res[i], train_l2_res[i], test_l2_res[i], 
-            test_T_l2_res[i], test_p_l2_res[i]))
+            test_T_l2_res[i]))

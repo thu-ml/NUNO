@@ -155,8 +155,8 @@ class FNO3d(nn.Module):
 ################################################################
 # configs
 ################################################################
-PATH_XYZ = 'data/heatsink/Heatsink_Output_XYZ.npy'
-PATH_U = 'data/heatsink/Heatsink_Output_Function.npy'
+PATH_XYZ = 'data/heatsink/Heatsink_XYZ.npy'
+PATH_U = 'data/heatsink/Heatsink_Function.npy'
 
 ntrain = 900
 ntest = 100
@@ -175,7 +175,7 @@ reg_lambda = 1e-4
 oversamp_ratio = 1.0
 grid_size = oversamp_ratio * n_points
 input_dim = 3
-output_dim = 2
+output_dim = 1
 
 ################################################################
 # training and evaluation
@@ -199,7 +199,7 @@ def main(train_a, train_u, train_u_pc, test_a, test_u, test_u_pc):
         lr=learning_rate, weight_decay=1e-4)
     scheduler = ReduceLROnPlateau(optimizer, patience=patience)
 
-    myloss = MultiLpLoss(size_average=False)
+    myloss = LpLoss(size_average=False)
     regloss = nn.MSELoss()
     y_normalizer.cuda()
     t0 = default_timer()
@@ -271,15 +271,11 @@ def main(train_a, train_u, train_u_pc, test_a, test_u, test_u_pc):
         pred = torch.tensor(pred).cpu()
         truth = test_u_point_cloud
         
-        test_l2 = myloss(pred, truth).item()
-        test_T_l2 = myloss(pred[..., 0], truth[..., 0], 
-            multi_channel=False).item()
-        test_p_l2 = myloss(pred[..., 1], truth[..., 1], 
-            multi_channel=False).item()
+        test_T_l2 = myloss(pred, truth).item()
 
     # Return final results
-    return train_l2, test_l2 / ntest, t2-t0, \
-        test_T_l2 / ntest, test_p_l2 / ntest
+    return train_l2, test_l2, t2-t0, \
+        test_T_l2 / ntest
 
 
 if __name__ == "__main__":
@@ -288,6 +284,7 @@ if __name__ == "__main__":
     ################################################################
     input_xyz = np.load(PATH_XYZ)           # shape: (19517, 3)
     input_point_cloud = np.load(PATH_U)     # shape: (1000, 19517, 5)
+    input_point_cloud = input_point_cloud[:ntotal]
     # Calculate the grid shape
     scales = np.max(input_xyz, 0) - np.min(input_xyz, 0)
     grid_shape = cal_grid_shape(grid_size, scales)
@@ -330,17 +327,11 @@ if __name__ == "__main__":
     train_a_grid = input_grid[:ntrain, ..., 1:4].cuda()
     test_a_grid = input_grid[-ntest:, ..., 1:4].cuda()
 
-    input_grid = torch.stack((
-        input_grid[..., 0],
-        input_grid[..., 4]
-    ), dim=-1)
+    input_grid = input_grid[..., 0:1]
     train_u_grid = input_grid[:ntrain].cuda()
     test_u_grid = input_grid[-ntest:].cuda()
 
-    input_point_cloud = torch.stack((
-        input_point_cloud[..., 0],
-        input_point_cloud[..., 4]
-    ), dim=-1)
+    input_point_cloud = input_point_cloud[..., 0:1]
     train_u_point_cloud = input_point_cloud[:ntrain].cuda()
     test_u_point_cloud = input_point_cloud[-ntest:]
 
@@ -357,21 +348,19 @@ if __name__ == "__main__":
     test_l2_res = []
     time_res = []
     test_T_l2_res = []
-    test_p_l2_res = []
     for i in range(5):
         print("=== Round %d ==="%(i+1))
         set_random_seed(SEED_LIST[i])
-        train_l2, test_l2, time, test_T_l2, test_p_l2 = \
+        train_l2, test_l2, time, test_T_l2 = \
             main(train_a_grid, train_u_grid, train_u_point_cloud, 
                 test_a_grid, test_u_grid, test_u_point_cloud)
         train_l2_res.append(train_l2)
         test_l2_res.append(test_l2)
         time_res.append(time)
         test_T_l2_res.append(test_T_l2)
-        test_p_l2_res.append(test_p_l2)
     print("=== Finish ===")
     for i in range(5):
         print('''[Round {}] Time: {:.1f}s Train_L2: {:>4e} Test_L2: {:>4e}
-            \tT_L2: {:>4e} p_L2: {:>4e}'''
+            \tT_L2: {:>4e}'''
             .format(i+1, time_res[i], train_l2_res[i], test_l2_res[i], 
-            test_T_l2_res[i], test_p_l2_res[i]))
+            test_T_l2_res[i]))
