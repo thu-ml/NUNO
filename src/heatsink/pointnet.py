@@ -162,7 +162,8 @@ def main(train_a, train_u, test_a, test_u):
         generator=torch.Generator(device=device)
     )
 
-    model = PointNetDenseCls(in_k=input_dim+3, out_k=output_dim).cuda()
+    model = PointNetDenseCls(in_k=input_dim+3, 
+        out_k=output_dim).cuda()
     print(count_params(model))
 
     optimizer = Adam(model.parameters(), 
@@ -171,6 +172,7 @@ def main(train_a, train_u, test_a, test_u):
 
     myloss = LpLoss(size_average=False)
     t0 = default_timer()
+    y_normalizer.cuda()
     for ep in range(epochs):
         model.train()
         t1 = default_timer()
@@ -182,6 +184,7 @@ def main(train_a, train_u, test_a, test_u):
 
             optimizer.zero_grad()
             out = model(x)
+            out = y_normalizer.decode(out)
 
             loss = myloss(out, y)
             loss.backward()
@@ -199,6 +202,7 @@ def main(train_a, train_u, test_a, test_u):
                 x = torch.concat((input_xyz, x), dim=-1)
                 x = x.permute(0, 2, 1)
                 out = model(x)
+                out = y_normalizer.decode(out)
                 test_l2 += myloss(out, y).item()
 
         train_l2 /= ntrain
@@ -225,16 +229,15 @@ if __name__ == "__main__":
 
     input_point_cloud = torch.from_numpy(input_point_cloud).float()
 
-    train_a = input_point_cloud[:ntrain, ..., 1:4]
-    test_a = input_point_cloud[-ntest:, ..., 1:4]
+    train_a = input_point_cloud[:ntrain, :, 1:4]
+    test_a = input_point_cloud[-ntest:, :, 1:4]
 
-    input_point_cloud = input_point_cloud[..., 0:1]
-    train_u = input_point_cloud[:ntrain]
-    test_u = input_point_cloud[-ntest:]
+    train_u = input_point_cloud[:ntrain, :, 0:1]
+    test_u = input_point_cloud[-ntest:, :, 0:1]
 
     a_normalizer = UnitGaussianNormalizer(train_a)
-    train_a_grid = a_normalizer.encode(train_a)
-    test_a_grid = a_normalizer.encode(test_a)
+    train_a = a_normalizer.encode(train_a)
+    test_a = a_normalizer.encode(test_a)
 
     y_normalizer = UnitGaussianNormalizer(train_u)
 
