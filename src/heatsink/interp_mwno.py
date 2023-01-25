@@ -82,7 +82,7 @@ batch_size = 20
 learning_rate = 0.001
 epochs = 501
 patience = epochs // 20
-reg_lambda = 6e-3
+reg_lambda = 5e-3
 
 oversamp_ratio = 1.0
 grid_size = oversamp_ratio * n_points
