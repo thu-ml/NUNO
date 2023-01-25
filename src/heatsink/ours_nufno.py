@@ -15,9 +15,9 @@ from scipy.interpolate import LinearNDInterpolator, \
 # Data path
 PATH = 'data/heatsink/'
 # Point cloud locations
-PATH_XYZ = PATH + 'Heatsink_XYZ.npy'
+PATH_XYZ = PATH + 'Heatsink_Output_XYZ.npy'
 # Point cloud values (T, u, v, w, p)
-PATH_U = PATH + 'Heatsink_Function.npy'
+PATH_U = PATH + 'Heatsink_Output_Function.npy'
 
 # Dataset params
 n_train = 900

@@ -155,8 +155,8 @@ class FNO3d(nn.Module):
 ################################################################
 # configs
 ################################################################
-PATH_XYZ = 'data/heatsink/Heatsink_XYZ.npy'
-PATH_U = 'data/heatsink/Heatsink_Function.npy'
+PATH_XYZ = 'data/heatsink/Heatsink_Output_XYZ.npy'
+PATH_U = 'data/heatsink/Heatsink_Output_Function.npy'
 
 ntrain = 900
 ntest = 100
