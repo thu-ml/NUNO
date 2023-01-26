@@ -49,7 +49,7 @@ n_subdomains = 8
 
 # Wether to save or load preprocessing results
 SAVE_PREP = False
-LOAD_PREP = True
+LOAD_PREP = False
 
 
 ################################################################

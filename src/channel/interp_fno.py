@@ -184,7 +184,7 @@ output_dim = 3
 
 # Wether to save or load preprocessing results
 SAVE_PREP = False
-LOAD_PREP = True
+LOAD_PREP = False
 
 ################################################################
 # training and evaluation
