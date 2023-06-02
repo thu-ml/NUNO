@@ -306,7 +306,7 @@ if __name__ == "__main__":
         interp_rbf = RBFInterpolator(point_cloud, point_cloud_val, neighbors=6)
         # Uniform Grid
         grid_x = np.linspace(np.min(point_cloud[:, 0]), np.max(point_cloud[:, 0]), num=S)
-        grid_y = np.linspace(np.min(point_cloud[:, 1]), np.min(point_cloud[:, 1]), num=S)
+        grid_y = np.linspace(np.min(point_cloud[:, 1]), np.max(point_cloud[:, 1]), num=S)
         grid_x, grid_y = np.meshgrid(grid_x, grid_y)
         grid_val = interp_linear(grid_x, grid_y)
         # Fill nan values
